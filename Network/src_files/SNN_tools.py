@@ -18,11 +18,13 @@ def process_print(current_number, maximum):
     for i in range(space_num):
         print(' ', end='')
     print(cur_str+'/'+max_str, end='')
+    if current_number==maximum:
+        print("")
     sys.stdout.flush()
 
 class Logger():
     '''
-    This is made for the record of training process.
+    This is made for the record of STDP training process.
     Assistant class for STDPExe object defined in SNN_StdpModel.py
     '''
     def __init__(self, stdp_exe):

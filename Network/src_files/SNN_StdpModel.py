@@ -117,7 +117,7 @@ class STDPExe():
         '''
         x: a batch of tensors that will be processed into self.model, [n, 28, 28]
         T: periods for a single propogation
-        return: firing rate for each pixel, [n, 2]
+        return: firing rate for each pixel, [n, 4, 4]
         '''
         T=self.T
         x=x.view(-1,1,28,28)
@@ -136,7 +136,7 @@ class STDPExe():
                 pred+=self.model(x)
                 for learner in self.stdp_learners:
                     learner.step(on_grad=True)
-            return pred/T
+            return (pred/T).view(-1, 4, 4)
     def load(self):
         loadmap='cpu'
         if torch.cuda.is_available()==True:
