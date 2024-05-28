@@ -92,10 +92,10 @@ class STDPExe():
         '''
         self.dir=store_dir
         if torch.cuda.is_available()==True:
-            print("Use CUDA")
+            print("STDP: Use CUDA")
             self.device=torch.device("cuda")
         else:
-            print("Use CPU")
+            print("STDP: Use CPU")
             self.device=torch.device("cpu")
         self.model=model.to(self.device)
         self.train_data=train_data

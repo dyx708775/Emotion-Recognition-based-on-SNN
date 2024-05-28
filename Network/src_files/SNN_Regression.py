@@ -1,5 +1,5 @@
 # Xiangnan Zhang 2024, School of Future Technologies, Beijing Institute of Technology
-# modified: 2024.5.26
+# modified: 2024.5.28
 
 # Dependencies: PyTorch, MatPlotLib
 import torch
@@ -79,18 +79,18 @@ class RegExe():
                 pred=self.__forward(x)
                 loss+=self.loss_fn(pred, y)
                 correct_num+=(pred.argmax(1)==y).float().sum()
-                process_print(i+1, length if length!=None else len(self,test_data))
+                process_print(i+1, length if length!=None else len(self.test_data))
                 if i+1==length:
                     break
             loss_mean=loss/len(self.test_data)
             loss_mean=loss_mean.cpu().item()
             accuracy=correct_num/len(self.test_data)
-            accuracy=accuracy.cpu.item()
+            accuracy=accuracy.cpu().item()
             self.loss_log['test'].append(loss_mean)
             self.accuracy_log['test'].append(accuracy)
             if do_print==True:
-                print("Test: loss={}, accuracy=[]".format(loss_mean, accuracy))
-    def train(self, Epochs: int=1, length=None, do_print==True):
+                print("Test: loss={}, accuracy={}".format(loss_mean, accuracy))
+    def train(self, Epochs: int=1, length=None, do_print=True):
         '''
         length: the amount of data used to do the train. default: whole training dataset.
         do_print: whether print the result or not.
@@ -98,7 +98,7 @@ class RegExe():
         for epoch in range(Epochs):
             self.model.train()
             correct_num=0
-            recorder # record the last time that culculate the accuracy
+            recorder=0 # record the last time that culculate the accuracy
             for i,(x,y) in enumerate(self.train_data):
                 if torch.cuda.is_available()==True:
                     x,y=x.cuda(),torch.tensor([y]).cuda()
@@ -111,11 +111,16 @@ class RegExe():
                 correct_num+=(pred.argmax(1)==y).float().sum()
                 process_print(i+1, length if length!=None else len(self.train_data))
                 if (i%1000==0 and i!=0) or i==len(self.train_data)-1:
+                    torch.save(self.model.state_dict(), self.dir+'/regression.pt')
                     accu=correct_num/(i-recorder+1) # calculate the accuracy for every 1000 times or less
                     recorder=i
                     self.accuracy_log['train'].append(accu.cpu().item())
                     if do_print==True:
-                        print("Epoch {}, train loss = {}, train accuracy = {}".format(epoch+1, loss, accu))
+                        print("\nEpoch {}, train loss = {}, train accuracy = {}".format(epoch+1, loss, accu))
+                        print("Testing: ", end='')
+                        self.test()
+                    self.visualize()
+                    correct_num=0
                 if i+1==length:
                     break
             torch.save(self.model.state_dict(), self.dir+'/regression.pt')
@@ -132,7 +137,7 @@ class RegExe():
             self.stdp_exe.load()
     def visualize(self, save=True) -> matplotlib.figure.Figure:
         plt.rcParams['axes.unicode_minus']=False
-        fig=plt.figure()
+        fig=plt.figure(figsize=(8,16))
         plt.subplot(4,1,1)
         plt.title('train loss')
         plt.plot(self.loss_log['train'])

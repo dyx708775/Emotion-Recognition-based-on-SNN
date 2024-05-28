@@ -4,8 +4,9 @@ from torchvision.datasets import MNIST
 from torchvision.transforms import ToTensor,ToPILImage
 import torch
 
-mnist_dir='/home/xiangnan/Files/code/mnist'
-modfolder_dir='/home/xiangnan/Files/code/SNN/src/stdp_final'
+mnist_dir='/home/featurize/work/Project/mnist'
+stdpmod_dir='/home/featurize/Network/model/STDP'
+regmod_dir='/home/featurize/Network/model/Regression'
 
 train_ds=MNIST(
     root=mnist_dir,
@@ -29,10 +30,10 @@ class SmallDataset(torch.utils.data.Dataset):
             raise StopIteration
         return self.ds[i]
 train_data=SmallDataset(train_ds,0,2000)
-test_data=SmallDataset(test_ds,0,100)
+test_data=SmallDataset(test_ds,0,150)
 
 model=Stdp.STDPModel()
-stdp_exe=Stdp.STDPExe(model, modfolder_dir, train_data, test_ds)
+stdp_exe=Stdp.STDPExe(model, stdpmod_dir, train_data, test_ds)
 
 reg_model=Reg.RegressionModel()
-reg_exe=Reg.RegExe(reg_model, stdp_exe, modfolder_dir, train_data, test_data)
+reg_exe=Reg.RegExe(reg_model, stdp_exe, regmod_dir, train_ds, test_data)
