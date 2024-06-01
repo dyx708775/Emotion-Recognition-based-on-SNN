@@ -1,7 +1,9 @@
 # Xiangnan Zhang 2024, School of Future Technologies, Beijing Institute of Technology
-# modified: 2024.5.28
-
+# modified: 2024.6.1
 # Dependencies: PyTorch, MatPlotLib
+
+# This is the definition of a regression classifier used after the unsupervised SNN Network
+
 import torch
 from torch import nn, optim
 import matplotlib.pyplot as plt
@@ -26,6 +28,7 @@ class RegressionModel(nn.Module):
 class RegExe():
     def __init__(self, reg_model: RegressionModel, stdp_exe: stdp.STDPExe, store_dir: str, train_data, test_data, **argv):
         '''
+        stdp_exe: unsupervised SNN model. Notice that .forward() method should be defined
         store_dir: directory of a folder that will store the regression model and features
         train_data and test_data: either packed as batches or not
         '''
