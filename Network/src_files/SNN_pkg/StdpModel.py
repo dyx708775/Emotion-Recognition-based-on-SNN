@@ -14,7 +14,7 @@ from typing import *
 import matplotlib.pyplot as plt
 from IPython.display import clear_output
 
-from SNN_tools import process_print, Logger
+from .tools import process_print, Logger
 
 class DOG():  # Different of Gossian
     def __init__(self, sigma1, sigma2, radius):

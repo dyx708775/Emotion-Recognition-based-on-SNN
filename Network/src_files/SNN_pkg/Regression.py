@@ -9,8 +9,7 @@ from torch import nn, optim
 import matplotlib.pyplot as plt
 import matplotlib
 
-from SNN_tools import process_print
-import SNN_StdpModel as stdp
+from .tools import process_print
 
 class RegressionModel(nn.Module):
     def __init__(self):
@@ -26,9 +25,9 @@ class RegressionModel(nn.Module):
         return x
 
 class RegExe():
-    def __init__(self, reg_model: RegressionModel, stdp_exe: stdp.STDPExe, store_dir: str, train_data, test_data, **argv):
+    def __init__(self, reg_model: RegressionModel, unsup_exe, store_dir: str, train_data, test_data, **argv):
         '''
-        stdp_exe: unsupervised SNN model. Notice that .forward() method should be defined
+        unsup_exe: unsupervised SNN model. Notice that .forward() method should be defined
         store_dir: directory of a folder that will store the regression model and features
         train_data and test_data: either packed as batches or not
         '''
@@ -36,8 +35,8 @@ class RegExe():
         if torch.cuda.is_available()==True:
             self.model.to('cuda')
             print("Regression: use CUDA.")
-        self.stdp_exe=stdp_exe
-        self.stdp_exe.load()
+        self.unsup_exe=unsup_exe
+        self.unsup_exe.load()
         print("STDP model loaded")
         self.dir=store_dir
         self.train_data=train_data 
@@ -55,7 +54,7 @@ class RegExe():
         if torch.cuda.is_available()==True:
             x=x.cuda()
         with torch.no_grad():
-            inp=self.stdp_exe.forward(x) # Send to STDP model, time steps is defined previously
+            inp=self.unsup_exe.forward(x) # Send to STDP model, time steps is defined previously
             inp.unsqueeze(1) # shape of inp: [n, 1, 4, 4]
         pred=self.model(inp) # Send to Regression model
         return pred
@@ -127,17 +126,17 @@ class RegExe():
                 if i+1==length:
                     break
             torch.save(self.model.state_dict(), self.dir+'/regression.pt')
-    def load(self, load_stdp=True):
+    def load(self, load_unsup=True):
         '''
         Used to load the state dict of the regression model, as well as STDP model.
-        load_stdp: whether the state dict of STDP model should be loaded at the same time.
+        load_unsup: whether the state dict of unsupervised SNN model should be loaded at the same time.
         '''
         loadmap='cpu'
         if torch.cuda.is_available()==True:
             loadmap='cuda'
         self.model.load_state_dict(torch.load(self.dir+'/regression.pt', map_location=loadmap))
-        if load_stdp==True:
-            self.stdp_exe.load()
+        if load_unsup==True:
+            self.unsup_exe.load()
     def visualize(self, save=True) -> matplotlib.figure.Figure:
         plt.rcParams['axes.unicode_minus']=False
         fig=plt.figure(figsize=(8,16))

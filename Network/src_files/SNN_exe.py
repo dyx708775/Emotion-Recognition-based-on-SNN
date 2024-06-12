@@ -1,5 +1,5 @@
-import SNN_StdpModel as Stdp
-import SNN_Regression as Reg
+from . import SNN_StdpModel as Stdp
+from . import SNN_Regression as Reg
 from torchvision.datasets import MNIST
 from torchvision.transforms import ToTensor,ToPILImage
 import torch
