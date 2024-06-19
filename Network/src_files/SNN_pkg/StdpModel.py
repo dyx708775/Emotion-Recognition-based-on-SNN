@@ -1,7 +1,7 @@
 # By Xiangnan Zhang, School of Future Technologies, Beijing Institute of Technology
 # This is the definition of the STDP-based model in Affective Computing Program
-# Dependence: SpikingJelly, PyTorch, NumPy, SciPy, MatPlotLib
-# Modified: 2024.5.18
+# Dependency: SpikingJelly, PyTorch, NumPy, SciPy, MatPlotLib
+# Modified: 2024.6.14
 
 from spikingjelly.activation_based import neuron,layer,functional,learning
 import torch
@@ -46,15 +46,20 @@ class STDPModel(nn.Module):
         self.pool2=layer.MaxPool2d(2, padding=1) #out: 6*6
         self.conv3=layer.Conv2d(4,1,3,padding=0, bias=False)  #out: 4*4
         self.node4=neuron.LIFNode(2.)
-        self.log=[None, None, None, None]
-        self.record=False  # Whether record the propogation into self.log. This will work in forward() #
         for param in self.parameters():
             param.data=torch.abs(param.data)
     def __getitem__(self, index):
-        lis=[self.node1, self.conv1, self.node2, self.conv2, self.node3, self.conv3, self.node4]
-        return lis[index]
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
         '''
+        It should match the protocol of STDPExe class.
+        A synapse and a neuron should be a pair.
+        '''
+        lis=[[self.conv1, self.node2], [self.conv2, self.node3], [self.conv3, self.node4]]
+        return lis[index]
+    def __len__(self):
+        return 3
+    def __single_forward(self, x: torch.Tensor) -> torch.Tensor:
+        '''
+        A single propogation process without time steps.
         x: torch.Tensor, [n, 1, 28, 28]
         return: torch.Tensor, [n, 4, 4]
         '''
@@ -74,6 +79,28 @@ class STDPModel(nn.Module):
             if self.record==True:
                 self.log[i+1]=x
         return x.view(-1,4,4)
+    def get_Cl(self):
+        Cl_list=[]
+        for i in range(len(self)):
+            layer_params=self[i][0].parameters()
+            cl=0
+            length=0
+            for param in layer_params:
+                param=param.data.flatten()
+                length+=len(param)
+                cl+=torch.sum(param*(1-param))
+            cl=cl/length
+            Cl_list.append(cl)
+        return Cl_list
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+       with torch.no_grad():
+           x=x.view(-1,1,28,28)
+       functional.reset_net(self)
+       pred=0
+       T=30
+       for i in range(T):
+           pred+=self.__single_forward(x)
+       return (pred/T).view(-1, 4, 4)
 
 def w_dep_factor(a: float, w: torch.Tensor) ->torch.Tensor:
     '''
@@ -84,7 +111,7 @@ def w_dep_factor(a: float, w: torch.Tensor) ->torch.Tensor:
     return a*w*(1-w)
     
 class STDPExe():
-    def __init__(self, model: STDPModel, store_dir: str, train_data, test_data, **argv):
+    def __init__(self, model: nn.Module, store_dir: str, train_data: Iterable[Tuple], test_data: Iterable[Tuple], **argv):
         '''
         store_dir refers to a directory f a folder, which includes file(s):
         1. STDPModel.pt  Weights of model.
@@ -100,49 +127,36 @@ class STDPExe():
         self.model=model.to(self.device)
         self.train_data=train_data
         self.test_data=test_data
-        self.optim=torch.optim.SGD(self.model.parameters(), lr=1e-1, momentum=0)
-        self.pre_wdf=lambda w: w_dep_factor(3e-3,w)
+        self.optim=torch.optim.SGD(self.model.parameters(), lr=1, momentum=0)
+        self.pre_wdf=lambda w: w_dep_factor(3e-3,w)  # 'wdf' means weight-dependence factor, see Morrison et al. (2018)
         self.post_wdf=lambda w: w_dep_factor(4e-3,w)
         self.stdp_learners=[
-            learning.STDPLearner('s', self.model[i], self.model[i+1], 2, 2, self.pre_wdf, self.post_wdf) for i in [1,3,5]
-            ] #Three STDPLearner for total
-        self.Cl_list=[[],[],[]]
-        self.ratelog=None
-        if 'T' in argv:
-            self.T=argv['T']
-        else:
-            self.T=30
+            learning.STDPLearner('s', self.model[i][0], self.model[i][1], 2, 2, self.pre_wdf, self.post_wdf) for i in range(len(self.model))
+            ] 
+        self.Cl_list=[] # Used to store all the Cl value during training
         self.logger=Logger(self)
-    def forward(self, x: torch.Tensor, record=False) -> torch.Tensor:
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
         '''
         x: a batch of tensors that will be processed into self.model, [n, 28, 28]
-        T: periods for a single propogation
         return: firing rate for each pixel, [n, 4, 4]
         '''
-        T=self.T
-        x=x.view(-1,1,28,28)
-        with torch.no_grad():
-            if self.device==torch.device("cuda"):
-                x=x.cuda()
-            functional.reset_net(self.model)
-            for learner in self.stdp_learners:
-                learner.reset()
-            pred=0
-            for i in range(T):
-                if i==T-1 and record==True:
-                    self.model.record=True
-                else:
-                    self.model.record=False
-                pred+=self.model(x)
-                for learner in self.stdp_learners:
-                    learner.step(on_grad=True)
-            return (pred/T).view(-1, 4, 4)
-    def load(self):
-        loadmap='cpu'
         if torch.cuda.is_available()==True:
-            loadmap='cuda'
-        self.model.load_state_dict(torch.load(self.dir+"/STDPModel.pt", map_location=loadmap))
+            x=x.cuda()
+        for learner in self.stdp_learners:
+            learner.reset()  # With the reset-step pair, STDPLearner will not store extra delta_w, even in testing process
+        pred=self.model(x)
+        for learner in self.stdp_learners:
+            learner.step(on_grad=True)
+        return pred
+    def load(self):
+        location='cpu'
+        if torch.cuda.is_available()==True:
+            location='cuda'
+        self.model.load_state_dict(torch.load(self.dir+"/STDPModel.pt", map_location=location))
     def train(self, epochs: int, save=True):
+        '''
+        save: Bool, wether save model's state dictionary
+        '''
         for epoch in range(epochs):
             self.model.train()
             for index,(x,y) in enumerate(self.train_data):
@@ -150,28 +164,15 @@ class STDPExe():
                 fire_rate=self.forward(x)
                 self.optim.step()
                 with torch.no_grad():
-                    for Cl_i,i in enumerate([1,3,5]):
-                        length=0
-                        par_sum=0
-                        for param in self.model[i].parameters():
-                            param=param.data.flatten()
-                            sub=(param*(1-param)).sum()
-                            par_sum+=sub
-                            length+=len(param)
-                        cl=par_sum/length
-                        cl=cl.item()
-                        self.Cl_list[Cl_i].append(cl)
+                    self.Cl_list.append(self.model.get_Cl())
                 process_print(index+1, len(self.train_data))
-                if self.Cl_list[0][-1]<=1e-5 and self.Cl_list[1][-1]<=1e-5 and self.Cl_list[2][-1]<=1e-5:
-                    print("The Model has been converged.")
+                B_list=[cl<=1e-5 for cl in self.Cl_list[-1]]
+                if all(B_list):  # Whether all the Cl values are less than 1e-5
+                    print("The Model has converged.")
                     break
             self.logger.write_log()
             if save==True:
                 torch.save(self.model.state_dict(), self.dir+"/STDPModel.pt")
-            self.model.eval()
-            x,y=self.test_data[0]
-            pred=self.forward(x, True)
-            self.ratelog=pred
     def visualize(self, save=True) -> tuple:
         cl_fig=plt.figure()
         # visualization of Cl Chart:
