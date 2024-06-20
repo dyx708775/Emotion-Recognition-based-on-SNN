@@ -46,6 +46,8 @@ class STDPModel(nn.Module):
         self.pool2=layer.MaxPool2d(2, padding=1) #out: 6*6
         self.conv3=layer.Conv2d(4,1,3,padding=0, bias=False)  #out: 4*4
         self.node4=neuron.LIFNode(2.)
+        self.record=False
+        self.log=[[],[],[],[]]
         for param in self.parameters():
             param.data=torch.abs(param.data)
     def __getitem__(self, index):
@@ -75,7 +77,7 @@ class STDPModel(nn.Module):
         ]
         for i,sequence in enumerate(block):
             for lay in sequence:
-                x=lay(x)
+                x=lay(x)  # Shape: [batch_size, out_channels, row, col]
             if self.record==True:
                 self.log[i+1]=x
         return x.view(-1,4,4)
@@ -98,7 +100,10 @@ class STDPModel(nn.Module):
        functional.reset_net(self)
        pred=0
        T=30
+       self.record=False
        for i in range(T):
+           if i=T-1:
+               self.record=True
            pred+=self.__single_forward(x)
        return (pred/T).view(-1, 4, 4)
 
@@ -182,57 +187,31 @@ class STDPExe():
         plt.xlabel("Adjust Times")
         plt.ylabel("Cl")
         plt.legend()
-        # Visualization of Feature Map:
         feature_fig=plt.figure()
-        n_max=0
-        for tens in self.model.log:  # Original shape of self.model.log: [batch_size, feature_num, x, y]
-            n,x,y=tens[0].shape
-            if n_max<n:
-                n_max=n
-        for i,tens in enumerate(self.model.log):
-            tens=tens[0] # Then Shape: [n, x, y]
-            for j,feature in enumerate(tens):  #feature shape: [x, y]
-                plt.subplot(n_max, 5, i+1+j*5)  # 4 pics in a row
-                feature=feature.cpu().numpy()
-                plt.imshow(feature, cmap='gray')
-                if i==0:
-                    plt.title("DOG, feature "+str(j+1))
-                else:
-                    plt.title("Conv "+str(i)+", feature "+str(j+1))
-        plt.subplot(n_max, 5, 5)
-        plt.title("Rate")
-        print(self.ratelog[0].cpu().numpy())
-        plt.imshow(self.ratelog[0].cpu().numpy(), cmap='gray')
-        plt.tight_layout()
-        if save==True:
-            cl_fig.savefig(self.dir+"/cl.jpg")
-            feature_fig.savefig(self.dir+"/feature.jpg")
+        if isinstance(self.model, STDPModel):
+            # Visualization of Feature Map:
+            n_max=0
+            for tens in self.model.log:  # Original shape of self.model.log: [sequence_number(4), batch_size, out_channels, rows, cols]
+                n,x,y=tens[0].shape # n: amount of out channels. x: amount of rows. y: amout of columns
+                if n_max<n:
+                    n_max=n  # after the loop, n_max will reach to the biggest channel amount among all the layers
+            for i,tens in enumerate(self.model.log):
+                tens=tens[0] # Get the first output in a batch. Then Shape: [out_channels, rows, cols]
+                for j,feature in enumerate(tens):  #feature shape: [x, y]
+                    plt.subplot(n_max, 5, i+1+j*5)  # 4 pics in a row
+                    feature=feature.cpu().numpy()
+                    plt.imshow(feature, cmap='gray')
+                    if i==0:
+                        plt.title("DOG, feature "+str(j+1))
+                    else:
+                        plt.title("Conv "+str(i)+", feature "+str(j+1))
+            plt.subplot(n_max, 5, 5)
+            plt.title("Rate")
+            print(self.ratelog[0].cpu().numpy())
+            plt.imshow(self.ratelog[0].cpu().numpy(), cmap='gray')
+            plt.tight_layout()
+            if save==True:
+                cl_fig.savefig(self.dir+"/cl.jpg")
+                feature_fig.savefig(self.dir+"/feature.jpg")
         return cl_fig, feature_fig
-    def test(self, dataset='test', save=True):
-        inp=[[],[],[],[],[],[],[],[],[],[]]
-        data=self.test_data if dataset=='test' else self.train_data
-        for label in range(10):
-            counter=0
-            i=0
-            while True:
-               x,y=data[i]
-               if y==label:
-                   inp[label].append(x)
-                   counter+=1
-               if counter==3:
-                   break
-               i+=1
-        print("Data Loaded")
-        fig=plt.figure(figsize=(12,6))
-        for i,input_data in enumerate(inp):
-            for j,img in enumerate(input_data):
-                plt.subplot(3,10,i+1+10*j)
-                if j==0:
-                    plt.title(str(i))
-                rate=self.forward(img)
-                rate=rate.squeeze().numpy()
-                plt.imshow(rate, cmap='gray')
-        plt.tight_layout
-        if save==True:
-            fig.savefig(self.dir+'/test.jpg')
-        return fig
+
