@@ -13,6 +13,7 @@ from scipy import ndimage
 from typing import *
 import matplotlib.pyplot as plt
 from IPython.display import clear_output
+import time
 
 from .tools import process_print, Logger
 
@@ -33,7 +34,7 @@ class DOG():  # Different of Gossian
             res_tensor.cpu()
         return res_tensor
 
-class STDPModel(nn.Module):
+class CV_STDPModel(nn.Module):
     def __init__(self):
         super().__init__()
         self.dog=DOG(2,0,3)  # Kernel size: 7*7
@@ -82,6 +83,9 @@ class STDPModel(nn.Module):
                 self.log[i+1]=x
         return x.view(-1,4,4)
     def get_Cl(self):
+        '''
+        This method has been duplicated. See it in class STDPExe
+        '''
         Cl_list=[]
         for i in range(len(self)):
             layer_params=self[i][0].parameters()
@@ -102,10 +106,66 @@ class STDPModel(nn.Module):
        T=30
        self.record=False
        for i in range(T):
-           if i=T-1:
+           if i==T-1:
                self.record=True
            pred+=self.__single_forward(x)
        return (pred/T).view(-1, 4, 4)
+
+class EEG_STDPModel(nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.b1_linear=layer.Linear(14,1000,bias=False)
+        self.b1_lif=neuron.LIFNode()
+        self.b1_cache=0
+        self.b1_recurrent=layer.Linear(1000,1000,bias=False)
+        self.b2_linear=layer.Linear(1000,1000,bias=False)
+        self.b2_lif=neuron.LIFNode()
+        self.b2_cache=0
+        self.b2_recurrent=layer.Linear(1000,1000,bias=False)
+        self.b3_linear=layer.Linear(1000,1000,bias=False)
+        self.b3_lif=neuron.LIFNode()
+        self.b3_cache=0
+        self.b3_recurrent=layer.Linear(1000,1000,bias=False)
+        for param in self.parameters():
+            param.data=torch.abs(param.data)
+    def __getitem__(self, index):
+        sy_list=[
+            [self.b1_linear, self.b1_lif],
+            [self.b1_recurrent, self.b1_lif],
+            [self.b2_linear, self.b2_lif],
+            [self.b2_recurrent, self.b2_lif],
+            [self.b3_linear, self.b3_lif],
+            [self.b3_recurrent, self.b3_lif]]
+        return sy_list[index]
+    def __len__(self):
+        return 6
+    def forward(self, x):
+        '''
+        x: shape [batch_size, 14, time_step]
+        out: [batch_size, 1000]
+        '''
+        batch_size,l,time_step=x.shape
+        self.b1_cache=torch.zeros(batch_size,1000)
+        self.b2_cache=torch.zeros(batch_size,1000)
+        self.b3_cache=torch.zeros(batch_size,1000)
+        functional.reset_net(self)
+        for i in range(time_step):
+            with torch.no_grad():
+                inp=x[:,:,i]  # shape: [batch_size, 14]
+            x=self.b1_linear(x)
+            y_cache=self.b1_recurrent(self.b1_cache)
+            x=self.b1_lif(x+y_cache)
+            self.b1_cache=x
+            x=self.b2_linear(x)
+            y_cache=self.b2_recurrent(self.b2_cache)
+            x=self.b2_lif(x+y_cache)
+            self.b2_cache=x
+            x=self.b3_linear(x)
+            y_cache=self.b3_recurrent(self.b3_cache)
+            x=self.b3_lif(x+y_cache)
+            self.b3_cache=x
+        state=torch.exp(self.b3_lif.v)
+        return state
 
 def w_dep_factor(a: float, w: torch.Tensor) ->torch.Tensor:
     '''
@@ -116,10 +176,22 @@ def w_dep_factor(a: float, w: torch.Tensor) ->torch.Tensor:
     return a*w*(1-w)
     
 class STDPExe():
+    '''
+    The following attributes are expected to be accessed in public:
+    1. dir: if you want to change the saving directory.
+    2. train_data
+    3. self_data
+    4.Cl_list: storing all the Cl values during training process.
+    The following methods are expected to be called in public:
+    1. forward(x)
+    2. load(): load the state directory of the STDP model.
+    3. calc_Cl(): to calculate the current Cl values.
+    4. train()
+    5. visualize()
+    '''
     def __init__(self, model: nn.Module, store_dir: str, train_data: Iterable[Tuple], test_data: Iterable[Tuple], **argv):
         '''
-        store_dir refers to a directory f a folder, which includes file(s):
-        1. STDPModel.pt  Weights of model.
+        store_dir refers to a directory of a folder.
         train_data and test_data: iterable, return an (x, y) tuple
         '''
         self.dir=store_dir
@@ -158,9 +230,28 @@ class STDPExe():
         if torch.cuda.is_available()==True:
             location='cuda'
         self.model.load_state_dict(torch.load(self.dir+"/STDPModel.pt", map_location=location))
+    def calc_Cl(self):
+        Cl_list=[]
+        for i in range(len(self.model)):
+            layer_params=self.model[i][0].parameters()
+            cl=0
+            length=0
+            for param in layer_params:
+                param=param.data.flatten()
+                length+=len(param)
+                cl+=torch.sum(param*(1-param))
+            cl=cl/length
+            Cl_list.append(cl)
+        return Cl_list
     def train(self, epochs: int, save=True):
         '''
         save: Bool, wether save model's state dictionary
+        After launching, you will get following files under store_dir:
+        1. STDP_log.txt: a log file about basic trainning setting. Updated for each epoch.
+        2. STDP_process_record.txt: a log file recording training process. Updated during each epoch.
+        3. cl.jpg: a graphic recrding the alternation of Cls.
+        4. feature.jpg: a graphic recording forward process if it is defined in visualize().
+        5. STDPModel.pt: the state directory of the STDP model.
         '''
         for epoch in range(epochs):
             self.model.train()
@@ -169,12 +260,17 @@ class STDPExe():
                 fire_rate=self.forward(x)
                 self.optim.step()
                 with torch.no_grad():
-                    self.Cl_list.append(self.model.get_Cl())
+                    self.Cl_list.append(self.calc_Cl())
                 process_print(index+1, len(self.train_data))
                 B_list=[cl<=1e-5 for cl in self.Cl_list[-1]]
                 if all(B_list):  # Whether all the Cl values are less than 1e-5
                     print("The Model has converged.")
                     break
+                if index%100==0:
+                    with open(self.dir+'/STDP_process_record.txt', 'w') as file:
+                        file.write("time={}\n".format(time.time()))
+                        file.write("epoch{}/{}, {}/{}\nCl={}\n".format(epoch+1, epochs, index+1, len(self.train_data), self.Cl_list))
+                figs=self.visualize()
             self.logger.write_log()
             if save==True:
                 torch.save(self.model.state_dict(), self.dir+"/STDPModel.pt")

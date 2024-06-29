@@ -35,7 +35,7 @@ class Logger():
         Structure of the log file:
         timestamp, model structure, length of trainining dataset, time steps, Cl list
         '''
-        with open(self.dir+'/log', 'a') as file:
+        with open(self.dir+'/STDP_log.txt', 'a') as file:
             timestamp=str(time.time())
             file.write(timestamp+'\n\n')
             modellog=str(self.exe.model)
@@ -46,7 +46,7 @@ class Logger():
             file.write(str(self.exe.Cl_list))
             file.write('\n\n\n')
     def __getitem__(self, index)  -> List[str]:
-        with open(self.dir+'/log', 'r') as file:
+        with open(self.dir+'/STDP_log', 'r') as file:
             content=file.read().split('\n\n\n')
             if index >=0:
                 logline=content[-(index+2)]
