@@ -49,6 +49,7 @@ class CV_STDPModel(nn.Module):
         self.node4=neuron.LIFNode(2.)
         self.record=False
         self.log=[[],[],[],[]]
+        self.history_rates=[]
         for param in self.parameters():
             param.data=torch.abs(param.data)
     def __getitem__(self, index):
@@ -60,7 +61,7 @@ class CV_STDPModel(nn.Module):
         return lis[index]
     def __len__(self):
         return 3
-    def __single_forward(self, x: torch.Tensor) -> torch.Tensor:
+    def __single_forward(self, x: torch.Tensor, record_rate: bool = False) -> torch.Tensor:
         '''
         A single propogation process without time steps.
         x: torch.Tensor, [n, 1, 28, 28]
@@ -76,58 +77,54 @@ class CV_STDPModel(nn.Module):
         [self.conv2, self.node3, self.pool2],
         [self.conv3, self.node4],
         ]
+        if record_rate==True:
+            rate_list=[]
         for i,sequence in enumerate(block):
             for lay in sequence:
                 x=lay(x)  # Shape: [batch_size, out_channels, row, col]
+                if record_rate==True and isinstance(lay, neuron.BaseNode):
+                    spiking=x[0].flatten()
+                    rate=spiking.sum()/len(spiking)
+                    rate_list.append(rate.item())
             if self.record==True:
                 self.log[i+1]=x
+        if record_rate==True:
+            self.history_rates.append(rate_list)
         return x.view(-1,4,4)
-    def get_Cl(self):
-        '''
-        This method has been duplicated. See it in class STDPExe
-        '''
-        Cl_list=[]
-        for i in range(len(self)):
-            layer_params=self[i][0].parameters()
-            cl=0
-            length=0
-            for param in layer_params:
-                param=param.data.flatten()
-                length+=len(param)
-                cl+=torch.sum(param*(1-param))
-            cl=cl/length
-            Cl_list.append(cl)
-        return Cl_list
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-       with torch.no_grad():
-           x=x.view(-1,1,28,28)
-       functional.reset_net(self)
-       pred=0
-       T=30
-       self.record=False
-       for i in range(T):
-           if i==T-1:
-               self.record=True
-           pred+=self.__single_forward(x)
-       return (pred/T).view(-1, 4, 4)
+    def forward(self, x: torch.Tensor, record_rate: bool = False) -> torch.Tensor:
+        with torch.no_grad():
+            x=x.view(-1,1,28,28)
+        functional.reset_net(self)
+        pred=0
+        T=30
+        self.record=False
+        do_record_rate=False
+        for i in range(T):
+            if i==T-1:
+                self.record=True
+                if record_rate==True:
+                    do_record_rate=True
+            pred+=self.__single_forward(x, do_record_rate)
+        return (pred/T).view(-1, 4, 4)
 
 class EEG_STDPModel(nn.Module):
     def __init__(self):
         super().__init__()
-        self.b1_linear=layer.Linear(14,1000,bias=False)
-        self.b1_lif=neuron.LIFNode()
+        self.b1_linear=layer.Linear(14,20,bias=False)
+        self.b1_lif=neuron.LIFNode(v_threshold=8.)
         self.b1_cache=0
-        self.b1_recurrent=layer.Linear(1000,1000,bias=False)
-        self.b2_linear=layer.Linear(1000,1000,bias=False)
-        self.b2_lif=neuron.LIFNode()
+        self.b1_recurrent=layer.Linear(20,20,bias=False)
+        self.b2_linear=layer.Linear(20,20,bias=False)
+        self.b2_lif=neuron.LIFNode(v_threshold=10.)
         self.b2_cache=0
-        self.b2_recurrent=layer.Linear(1000,1000,bias=False)
-        self.b3_linear=layer.Linear(1000,1000,bias=False)
-        self.b3_lif=neuron.LIFNode()
+        self.b2_recurrent=layer.Linear(20,20,bias=False)
+        self.b3_linear=layer.Linear(20,500,bias=False)
+        self.b3_lif=neuron.LIFNode(v_threshold=10.)
         self.b3_cache=0
-        self.b3_recurrent=layer.Linear(1000,1000,bias=False)
+        self.b3_recurrent=layer.Linear(500,500,bias=False)
+        self.history_rates=[]  # Used to record the firing rates of each LIF layer while training.
         for param in self.parameters():
-            param.data=torch.abs(param.data)
+            torch.nn.init.normal_(param.data, mean=0.8, std=0.005)
     def __getitem__(self, index):
         sy_list=[
             [self.b1_linear, self.b1_lif],
@@ -139,33 +136,43 @@ class EEG_STDPModel(nn.Module):
         return sy_list[index]
     def __len__(self):
         return 6
-    def forward(self, x):
+    def forward(self, x, record_rate: bool = False):
         '''
         x: shape [batch_size, 14, time_step]
-        out: [batch_size, 1000]
+        out: [batch_size, 500]
         '''
         batch_size,l,time_step=x.shape
-        self.b1_cache=torch.zeros(batch_size,1000)
-        self.b2_cache=torch.zeros(batch_size,1000)
-        self.b3_cache=torch.zeros(batch_size,1000)
+        self.b1_cache=torch.zeros(batch_size,20)
+        self.b2_cache=torch.zeros(batch_size,20)
+        self.b3_cache=torch.zeros(batch_size,500)
         functional.reset_net(self)
         for i in range(time_step):
             with torch.no_grad():
                 inp=x[:,:,i]  # shape: [batch_size, 14]
-            x=self.b1_linear(x)
+            inp=self.b1_linear(inp)
             y_cache=self.b1_recurrent(self.b1_cache)
-            x=self.b1_lif(x+y_cache)
-            self.b1_cache=x
-            x=self.b2_linear(x)
+            inp=self.b1_lif(inp+y_cache)
+            self.b1_cache=inp
+            inp=self.b2_linear(inp)
             y_cache=self.b2_recurrent(self.b2_cache)
-            x=self.b2_lif(x+y_cache)
-            self.b2_cache=x
-            x=self.b3_linear(x)
+            inp=self.b2_lif(inp+y_cache)
+            self.b2_cache=inp
+            inp=self.b3_linear(inp)
             y_cache=self.b3_recurrent(self.b3_cache)
-            x=self.b3_lif(x+y_cache)
-            self.b3_cache=x
-        state=torch.exp(self.b3_lif.v)
-        return state
+            inp=self.b3_lif(inp+y_cache)
+            self.b3_cache=inp
+            if record_rate==True and i==time_step-1:
+                # Then record the firing rates of each neuron layer.
+                rate_list=[]
+                n_1=self.b1_cache[0].detach()
+                n_2=self.b2_cache[0].detach()
+                n_3=self.b3_cache[0].detach()
+                rate_list.append((n_1.sum()/len(n_1)).item())
+                rate_list.append((n_2.sum()/len(n_2)).item())
+                rate_list.append((n_3.sum()/len(n_3)).item())
+                self.history_rates.append(rate_list)
+        liquid_state=torch.exp(self.b3_lif.v)
+        return liquid_state
 
 def w_dep_factor(a: float, w: torch.Tensor) ->torch.Tensor:
     '''
@@ -189,10 +196,10 @@ class STDPExe():
     4. train()
     5. visualize()
     '''
-    def __init__(self, model: nn.Module, store_dir: str, train_data: Iterable[Tuple], test_data: Iterable[Tuple], **argv):
+    def __init__(self, model: nn.Module, store_dir: str, train_data: Iterable[Tuple], test_data: Iterable[Tuple]):
         '''
-        store_dir refers to a directory of a folder.
-        train_data and test_data: iterable, return an (x, y) tuple
+        store_dir refers to a directory of a folder, where to save training results and the model.
+        train_data and test_data: iterable, return an (x, y) tuple. They should be packed as batches.
         '''
         self.dir=store_dir
         if torch.cuda.is_available()==True:
@@ -204,7 +211,7 @@ class STDPExe():
         self.model=model.to(self.device)
         self.train_data=train_data
         self.test_data=test_data
-        self.optim=torch.optim.SGD(self.model.parameters(), lr=1, momentum=0)
+        self.optim=torch.optim.SGD(self.model.parameters(), lr=1e-1, momentum=0)
         self.pre_wdf=lambda w: w_dep_factor(3e-3,w)  # 'wdf' means weight-dependence factor, see Morrison et al. (2018)
         self.post_wdf=lambda w: w_dep_factor(4e-3,w)
         self.stdp_learners=[
@@ -212,20 +219,23 @@ class STDPExe():
             ] 
         self.Cl_list=[] # Used to store all the Cl value during training
         self.logger=Logger(self)
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
+    def forward(self, x: torch.Tensor, training=True) -> torch.Tensor:
         '''
-        x: a batch of tensors that will be processed into self.model, [n, 28, 28]
-        return: firing rate for each pixel, [n, 4, 4]
+        x: a batch of tensors that will be processed into self.model.
+        return: encoding result.
         '''
         if torch.cuda.is_available()==True:
             x=x.cuda()
         for learner in self.stdp_learners:
             learner.reset()  # With the reset-step pair, STDPLearner will not store extra delta_w, even in testing process
-        pred=self.model(x)
+        pred=self.model(x, True if training==True else False)
         for learner in self.stdp_learners:
             learner.step(on_grad=True)
         return pred
     def load(self):
+        '''
+        Load STDP model's state directory from the directory.
+        '''
         location='cpu'
         if torch.cuda.is_available()==True:
             location='cuda'
@@ -247,17 +257,20 @@ class STDPExe():
         '''
         save: Bool, wether save model's state dictionary
         After launching, you will get following files under store_dir:
-        1. STDP_log.txt: a log file about basic trainning setting. Updated for each epoch.
-        2. STDP_process_record.txt: a log file recording training process. Updated during each epoch.
-        3. cl.jpg: a graphic recrding the alternation of Cls.
-        4. feature.jpg: a graphic recording forward process if it is defined in visualize().
-        5. STDPModel.pt: the state directory of the STDP model.
+        1. logs (txt files):
+            1.1 STDP_log.txt: a log file about basic trainning setting. Updated for each epoch.
+            1.2 STDP_process_record.txt: a log file recording training process. Updated during each epoch.
+        2. charts (jpg files):
+            2.1 cl.jpg: a chart recording the alternation of Cls.
+            2.2 firing_rate.jpg: a chart recording the firing rates of each neuron layer. 
+            2.3 feature.jpg: a graphic recording forward process if it is defined in visualize().
+        3. STDPModel.pt: the state directory of the STDP model.
         '''
         for epoch in range(epochs):
             self.model.train()
             for index,(x,y) in enumerate(self.train_data):
                 self.optim.zero_grad()
-                fire_rate=self.forward(x)
+                fire_rate=self.forward(x, True) # set record_rate=True, record the firing rates.
                 self.optim.step()
                 with torch.no_grad():
                     self.Cl_list.append(self.calc_Cl())
@@ -266,26 +279,46 @@ class STDPExe():
                 if all(B_list):  # Whether all the Cl values are less than 1e-5
                     print("The Model has converged.")
                     break
-                if index%100==0:
+                if (index%100==0 and index!=0) or index==len(self.train_data)-1:
                     with open(self.dir+'/STDP_process_record.txt', 'w') as file:
                         file.write("time={}\n".format(time.time()))
-                        file.write("epoch{}/{}, {}/{}\nCl={}\n".format(epoch+1, epochs, index+1, len(self.train_data), self.Cl_list))
-                figs=self.visualize()
+                        file.write("epoch {}/{}, {}/{}\n".format(epoch+1, epochs, index+1, len(self.train_data)))
+                        file.write("Cl={}\n".format(self.Cl_list))
+                        file.write("spiking_rates={}\n".format(self.model.history_rates))
+                    figs=self.visualize(True)
             self.logger.write_log()
             if save==True:
                 torch.save(self.model.state_dict(), self.dir+"/STDPModel.pt")
     def visualize(self, save=True) -> tuple:
-        cl_fig=plt.figure()
+        plt.rcParams['axes.unicode_minus']=False
+        '''
+        The following charts will be created:
+        1. cl_fig (cl.jpg) 
+        2. firing_rate_fig (firing_rate.jpg)
+        3. feature_fig (feature.jpg)
+        '''
         # visualization of Cl Chart:
-        for i,cl_list in enumerate(self.Cl_list):
-            plt.plot(cl_list, label="Conv "+str(i+1))
+        cl_fig=plt.figure()
         plt.title("Cl Chart")
         plt.xlabel("Adjust Times")
         plt.ylabel("Cl")
+        for i in range(len(self.model)):
+            cl_list=[x[i] for x in self.Cl_list]
+            plt.plot(cl_list, label='synapse {}'.format(i+1))
         plt.legend()
+        # Visualization of firing rates:
+        firing_rate_fig=plt.figure()
+        plt.title("Firing Rates")
+        plt.xlabel("Adjust Times")
+        plt.ylabel("rate (%)")
+        n=len(self.model.history_rates[0])  # The amount of neuron layers
+        for i in range(n):
+            rates=[rate_list[i] for rate_list in self.model.history_rates]
+            plt.plot(rates, label="Neurons {}".format(i+1))
+        plt.legend()
+        # Visualization of Feature Map:
         feature_fig=plt.figure()
-        if isinstance(self.model, STDPModel):
-            # Visualization of Feature Map:
+        if isinstance(self.model, CV_STDPModel):
             n_max=0
             for tens in self.model.log:  # Original shape of self.model.log: [sequence_number(4), batch_size, out_channels, rows, cols]
                 n,x,y=tens[0].shape # n: amount of out channels. x: amount of rows. y: amout of columns
@@ -306,8 +339,10 @@ class STDPExe():
             print(self.ratelog[0].cpu().numpy())
             plt.imshow(self.ratelog[0].cpu().numpy(), cmap='gray')
             plt.tight_layout()
-            if save==True:
-                cl_fig.savefig(self.dir+"/cl.jpg")
-                feature_fig.savefig(self.dir+"/feature.jpg")
-        return cl_fig, feature_fig
+        if save==True:
+            cl_fig.savefig(self.dir+"/cl.jpg")
+            feature_fig.savefig(self.dir+"/feature.jpg")
+            firing_rate_fig.savefig(self.dir+"/firing_rate.jpg")
+            print("STDP Charts saved.")
+        return cl_fig, firing_rate_fig, feature_fig
 
