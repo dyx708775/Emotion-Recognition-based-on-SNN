@@ -25,10 +25,10 @@ class RegressionModel(nn.Module):
         x=x.view(-1,10)
         return x
 
-class EEGReg(nn.Module):
+class EEG_Reg(nn.Module):
     def __init__(self):
         super().__init__()
-        self.linear=nn.Linear(1000,2)
+        self.linear=nn.Linear(500,2)
         self.sigmoid=nn.Sigmoid()
     def forward(self, state):
         '''
@@ -93,7 +93,7 @@ class RegExe():
             loss=0
             for i,(x,y) in enumerate(self.test_data):
                 if torch.cuda.is_available()==True:
-                    x,y=x.cuda(),torch.tensor([y]).cuda() # shape of y: (,n)
+                    x,y=x.cuda(),y.cuda() # shape of y: (,n)
                 pred=self.__forward(x)
                 loss+=self.loss_fn(pred, y)
                 pred[pred>=0.5]=1
@@ -124,20 +124,24 @@ class RegExe():
             recorder=0 # record the last time that culculate the accuracy
             for i,(x,y) in enumerate(self.train_data):
                 if torch.cuda.is_available()==True:
-                    x,y=x.cuda(),torch.tensor([y]).cuda()
+                    x,y=x.cuda(),y.cuda()
                 pred=self.__forward(x)
                 self.optimizer.zero_grad()
                 loss=self.loss_fn(pred, y)
                 self.loss_log['train'].append(loss.cpu().item())
                 loss.backward()
                 self.optimizer.step()
-                correct_num+=(pred.argmax(1)==y).float().sum()
+                pred[pred>=0.5]=1
+                pred[pred<0.5]=0
+                for n,single_pred in enumerate(pred):
+                    if single_pred[0]==y[n][0] and single_pred[1]==y[n][1]:
+                        correct_num+=1
                 process_print(i+1, length)
-                if (i%100==0 and i!=0) or i==length-1:
+                if (i%5==0 and i!=0) or i==length-1:
                     torch.save(self.model.state_dict(), self.dir+'/regression.pt')
                     accu=correct_num/(i-recorder+1) # calculate the accuracy for every 1000 times or less
                     recorder=i
-                    self.accuracy_log['train'].append(accu.cpu().item())
+                    self.accuracy_log['train'].append(accu)
                     if do_print==True:
                         print("\nEpoch {}, train loss = {}, train accuracy = {}".format(epoch+1, loss, accu))
                         print("Testing: ", end='')

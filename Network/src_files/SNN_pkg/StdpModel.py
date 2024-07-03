@@ -49,7 +49,7 @@ class CV_STDPModel(nn.Module):
         self.node4=neuron.LIFNode(2.)
         self.record=False
         self.log=[[],[],[],[]]
-        self.history_rates=[]
+        self.rates=[]
         for param in self.parameters():
             param.data=torch.abs(param.data)
     def __getitem__(self, index):
@@ -89,7 +89,7 @@ class CV_STDPModel(nn.Module):
             if self.record==True:
                 self.log[i+1]=x
         if record_rate==True:
-            self.history_rates.append(rate_list)
+            self.rates=rate_list
         return x.view(-1,4,4)
     def forward(self, x: torch.Tensor, record_rate: bool = False) -> torch.Tensor:
         with torch.no_grad():
@@ -111,32 +111,37 @@ class EEG_STDPModel(nn.Module):
     def __init__(self):
         super().__init__()
         self.b1_linear=layer.Linear(14,20,bias=False)
-        self.b1_lif=neuron.LIFNode(v_threshold=8.)
+        self.b1_lif=neuron.LIFNode(v_threshold=5.)
         self.b1_cache=0
         self.b1_recurrent=layer.Linear(20,20,bias=False)
         self.b2_linear=layer.Linear(20,20,bias=False)
-        self.b2_lif=neuron.LIFNode(v_threshold=10.)
+        self.b2_lif=neuron.LIFNode(v_threshold=5.)
         self.b2_cache=0
         self.b2_recurrent=layer.Linear(20,20,bias=False)
         self.b3_linear=layer.Linear(20,500,bias=False)
-        self.b3_lif=neuron.LIFNode(v_threshold=10.)
+        self.b3_lif=neuron.LIFNode(v_threshold=9999999999999999.)
         self.b3_cache=0
         self.b3_recurrent=layer.Linear(500,500,bias=False)
-        self.history_rates=[]  # Used to record the firing rates of each LIF layer while training.
-        for param in self.parameters():
-            torch.nn.init.normal_(param.data, mean=0.8, std=0.005)
-    def __getitem__(self, index):
-        sy_list=[
+        self.rates=[]  # Used to record the firing rates of each LIF layer while training.
+        self.synapse_list=[
             [self.b1_linear, self.b1_lif],
-            [self.b1_recurrent, self.b1_lif],
+          #  [self.b1_recurrent, self.b1_lif],
             [self.b2_linear, self.b2_lif],
-            [self.b2_recurrent, self.b2_lif],
+          #  [self.b2_recurrent, self.b2_lif],
             [self.b3_linear, self.b3_lif],
-            [self.b3_recurrent, self.b3_lif]]
-        return sy_list[index]
+          #  [self.b3_recurrent, self.b3_lif]
+          ]
+        for param in self.parameters():
+            torch.nn.init.normal_(param.data, mean=0.8, std=0.5)
+            param.data=torch.clamp(param.data, min=0, max=1)
+   #    param=next(self.b3_recurrent.parameters())
+   #    torch.nn.init.normal_(param.data, mean=0.2, std=0.5)
+  #     param.data=torch.clamp(param.data, min=0, max=1)
+    def __getitem__(self, index):
+        return self.synapse_list[index]
     def __len__(self):
-        return 6
-    def forward(self, x, record_rate: bool = False):
+        return len(self.synapse_list)
+    def forward(self, x, record_rate: bool = False, auto_reset: bool = True):
         '''
         x: shape [batch_size, 14, time_step]
         out: [batch_size, 500]
@@ -145,21 +150,26 @@ class EEG_STDPModel(nn.Module):
         self.b1_cache=torch.zeros(batch_size,20)
         self.b2_cache=torch.zeros(batch_size,20)
         self.b3_cache=torch.zeros(batch_size,500)
-        functional.reset_net(self)
+        if torch.cuda.is_available()==True:
+            self.b1_cache=self.b1_cache.cuda()
+            self.b2_cache=self.b2_cache.cuda()
+            self.b3_cache=self.b3_cache.cuda()
+        if auto_reset==True:
+            functional.reset_net(self)
         for i in range(time_step):
             with torch.no_grad():
                 inp=x[:,:,i]  # shape: [batch_size, 14]
             inp=self.b1_linear(inp)
-            y_cache=self.b1_recurrent(self.b1_cache)
-            inp=self.b1_lif(inp+y_cache)
+         #  y_cache=self.b1_recurrent(self.b1_cache)
+            inp=self.b1_lif(inp)
             self.b1_cache=inp
             inp=self.b2_linear(inp)
-            y_cache=self.b2_recurrent(self.b2_cache)
-            inp=self.b2_lif(inp+y_cache)
+         #  y_cache=self.b2_recurrent(self.b2_cache)
+            inp=self.b2_lif(inp)
             self.b2_cache=inp
             inp=self.b3_linear(inp)
-            y_cache=self.b3_recurrent(self.b3_cache)
-            inp=self.b3_lif(inp+y_cache)
+          # y_cache=self.b3_recurrent(self.b3_cache)
+            inp=self.b3_lif(inp)
             self.b3_cache=inp
             if record_rate==True and i==time_step-1:
                 # Then record the firing rates of each neuron layer.
@@ -167,10 +177,10 @@ class EEG_STDPModel(nn.Module):
                 n_1=self.b1_cache[0].detach()
                 n_2=self.b2_cache[0].detach()
                 n_3=self.b3_cache[0].detach()
-                rate_list.append((n_1.sum()/len(n_1)).item())
-                rate_list.append((n_2.sum()/len(n_2)).item())
-                rate_list.append((n_3.sum()/len(n_3)).item())
-                self.history_rates.append(rate_list)
+                rate_list.append((n_1.sum()/len(n_1)).cpu().item())
+                rate_list.append((n_2.sum()/len(n_2)).cpu().item())
+                rate_list.append((n_3.sum()/len(n_3)).cpu().item())
+                self.rates=rate_list
         liquid_state=torch.exp(self.b3_lif.v)
         return liquid_state
 
@@ -219,7 +229,8 @@ class STDPExe():
             ] 
         self.Cl_list=[] # Used to store all the Cl value during training
         self.logger=Logger(self)
-    def forward(self, x: torch.Tensor, training=True) -> torch.Tensor:
+        self.history_rates=[]  # histroy firing rates of each neuron layers during training.
+    def forward(self, x: torch.Tensor, training=False) -> torch.Tensor:
         '''
         x: a batch of tensors that will be processed into self.model.
         return: encoding result.
@@ -229,6 +240,8 @@ class STDPExe():
         for learner in self.stdp_learners:
             learner.reset()  # With the reset-step pair, STDPLearner will not store extra delta_w, even in testing process
         pred=self.model(x, True if training==True else False)
+        if training==True:
+            self.history_rates.append(self.model.rates)
         for learner in self.stdp_learners:
             learner.step(on_grad=True)
         return pred
@@ -249,7 +262,7 @@ class STDPExe():
             for param in layer_params:
                 param=param.data.flatten()
                 length+=len(param)
-                cl+=torch.sum(param*(1-param))
+                cl+=torch.sum(param*(1-param)).cpu().item()
             cl=cl/length
             Cl_list.append(cl)
         return Cl_list
@@ -276,19 +289,22 @@ class STDPExe():
                     self.Cl_list.append(self.calc_Cl())
                 process_print(index+1, len(self.train_data))
                 B_list=[cl<=1e-5 for cl in self.Cl_list[-1]]
-                if all(B_list):  # Whether all the Cl values are less than 1e-5
-                    print("The Model has converged.")
-                    break
-                if (index%100==0 and index!=0) or index==len(self.train_data)-1:
+                if (index%5==0 and index!=0) or index==len(self.train_data)-1 or all(B_list):
+                    print("")
                     with open(self.dir+'/STDP_process_record.txt', 'w') as file:
                         file.write("time={}\n".format(time.time()))
                         file.write("epoch {}/{}, {}/{}\n".format(epoch+1, epochs, index+1, len(self.train_data)))
                         file.write("Cl={}\n".format(self.Cl_list))
-                        file.write("spiking_rates={}\n".format(self.model.history_rates))
+                        file.write("spiking_rates={}\n".format(self.history_rates))
                     figs=self.visualize(True)
+                    plt.close()
+                    if save==True:
+                        torch.save(self.model.state_dict(), self.dir+"/STDPModel.pt")
+                        print("Model saved.")
+                if all(B_list):  # Whether all the Cl values are less than 1e-5
+                    print("The Model has converged.")
+                    break
             self.logger.write_log()
-            if save==True:
-                torch.save(self.model.state_dict(), self.dir+"/STDPModel.pt")
     def visualize(self, save=True) -> tuple:
         plt.rcParams['axes.unicode_minus']=False
         '''
@@ -311,9 +327,9 @@ class STDPExe():
         plt.title("Firing Rates")
         plt.xlabel("Adjust Times")
         plt.ylabel("rate (%)")
-        n=len(self.model.history_rates[0])  # The amount of neuron layers
+        n=len(self.history_rates[0])  # The amount of neuron layers
         for i in range(n):
-            rates=[rate_list[i] for rate_list in self.model.history_rates]
+            rates=[rate_list[i] for rate_list in self.history_rates]
             plt.plot(rates, label="Neurons {}".format(i+1))
         plt.legend()
         # Visualization of Feature Map:
@@ -345,4 +361,30 @@ class STDPExe():
             firing_rate_fig.savefig(self.dir+"/firing_rate.jpg")
             print("STDP Charts saved.")
         return cl_fig, firing_rate_fig, feature_fig
+    def test(self, save=True):
+        with torch.no_grad():
+            test_fig=plt.figure(figsize=(10,12))
+            data_iter=iter(self.test_data)
+            for i in range(3):  # Select 3 data to do the test
+                plt.subplot(3,1,i+1)
+                plt.title("Sample {}".format(i+1))
+                functional.reset_net(self.model)
+                x,y=next(data_iter) # x shape: [batch_size, channels, time_step]
+                x= x[0].cuda() if torch.cuda.is_available()==True else x[0]
+                time_step=x.shape[-1]
+                rates=[]
+                for ts in range(time_step):
+                    single_x=x[:,ts].view(1,-1,1)
+                    out=self.model(single_x, True, False) # record_rates=True, auto_reset=False
+                    rates.append(self.model.rates)
+                n=len(rates[0])
+                for j in range(n):
+                    plt.plot(np.arange(time_step-7800)+7800, [x[j] for x in rates[7800:]], label="Neuron {}".format(j+1), linewidth=0.5)
+                plt.legend()
+                process_print(i+1,3)
+            plt.tight_layout()
+            if save==True:
+                test_fig.savefig("{}/3_sample_test.jpg".format(self.dir))
+                print("Chart saved")
+            return test_fig
 

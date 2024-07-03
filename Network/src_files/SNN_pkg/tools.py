@@ -72,19 +72,31 @@ class SimpleDeap(torch.utils.data.Dataset):
     '''
     This is a class that packs preprocessed DEAP data and transfers them into spiking.
     '''
-    def __init__(self, deap_dir: str):
+    def __init__(self, deap_dir: str, memory_num: int = 10):
+        '''
+        in_memory: the amount to stored into the memory.
+        '''
         self.dir=deap_dir
         self.index=[] 
         for i in range(32):
             for j in range(40):
                 self.index.append((i,j)) # The ith person's jth test
         random.shuffle(self.index)
+        self.memory=dict()
+        self.memory_num=memory_num
     def __len__(self):
         return 32*40
     def __getitem__(self, i):
         person, test = self.index[i]
-        file_index="0{}".format(person+1) if person<9 else str(person+1)
-        mat=scipy.io.loadmat("{}/s{}.mat".format(self.dir, file_index))
+        if person in self.memory:
+            mat=self.memory[person]
+        else:
+            if len(self.memory.keys()) >= self.memory_num:
+                first_key=list(self.memory.keys())[0]
+                del self.memory[first_key]
+            file_index="0{}".format(person+1) if person<9 else str(person+1)
+            mat=scipy.io.loadmat("{}/s{}.mat".format(self.dir, file_index))
+            self.memory[person]=mat
         x=mat['data'][test]
         x=x[:14]
         y=mat['labels'][test][:2]
