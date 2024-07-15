@@ -9,6 +9,7 @@ from torch import nn, optim
 import matplotlib.pyplot as plt
 import matplotlib
 import time
+import math
 
 from .tools import process_print
 
@@ -28,15 +29,36 @@ class RegressionModel(nn.Module):
 class EEG_Reg(nn.Module):
     def __init__(self):
         super().__init__()
-        self.linear=nn.Linear(500,2)
+        self.linear=nn.Linear(32,2)
         self.sigmoid=nn.Sigmoid()
     def forward(self, state):
         '''
-        in: [batch_size, 1000]
+        in: [batch_size, 32]
         out: [batch_size, 2]
         '''
-        x=self.linear(state)
-        pred=self.sigmoid(x)
+        state=(2*state-(math.exp(3)+1))/(math.exp(3)-1)        
+        state=self.linear(state)
+        pred=self.sigmoid(state)
+        return pred
+
+class EEG_DNN(nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.sequential=nn.Sequential(
+        nn.Linear(32,50),
+        nn.ReLU(),
+        nn.Linear(50,100),
+        nn.ReLU(),
+        nn.Linear(100,2),
+        nn.Sigmoid()
+        )
+    def forward(self, state):
+        '''
+        in: [batch_size, 32]
+        out: [batch_size, 2]
+        '''
+        state=(2*state-(math.exp(3)+1))/(math.exp(3)-1)        
+        pred=self.sequential(state)
         return pred
 
 class RegExe():
@@ -49,18 +71,20 @@ class RegExe():
         self.model=reg_model
         if torch.cuda.is_available()==True:
             self.model.to('cuda')
-            print("Regression: use CUDA.")
+            print("RegExe: use CUDA.")
+        else:
+            self.model.to('cpu')
+            print("RegExe: use CPU.")
         self.unsup_exe=unsup_exe
         try:
             self.unsup_exe.load()
-            print("STDP model loaded")
         except FileNotFoundError:
-            print("Warning: STDP model doesn't exist.")
+            print("RegExe Warning: STDP model doesn't exist.")
         self.dir=store_dir
         self.train_data=train_data 
         self.test_data=test_data
-        self.optimizer=optim.SGD(self.model.parameters(), lr=1e-3)
-        self.loss_fn=nn.MSELoss()
+        self.optimizer=optim.Adam(self.model.parameters())
+        self.loss_fn=nn.BCELoss()
         self.loss_log={'train':[], 'test':[]}
         self.accuracy_log={'train':[], 'test':[]}
     def __forward(self, x):
@@ -106,7 +130,7 @@ class RegExe():
                     break
             loss_mean=loss/length
             loss_mean=loss_mean.cpu().item()
-            accuracy=float(correct_num)/length
+            accuracy=float(correct_num)/len(self.test_data.dataset)
             self.loss_log['test'].append(loss_mean)
             self.accuracy_log['test'].append(accuracy)
             if do_print==True:
@@ -115,13 +139,14 @@ class RegExe():
         '''
         length: the amount of data used to do the train. default: whole training dataset.
         do_print: whether print the result or not.
-        ''' 
+        '''
+        print("RegExe: start training.") 
         if length==None:
             length=len(self.train_data)
         for epoch in range(Epochs):
             self.model.train()
             correct_num=0
-            recorder=0 # record the last time that culculate the accuracy
+            total_amount_for_accuracy=0
             for i,(x,y) in enumerate(self.train_data):
                 if torch.cuda.is_available()==True:
                     x,y=x.cuda(),y.cuda()
@@ -133,14 +158,16 @@ class RegExe():
                 self.optimizer.step()
                 pred[pred>=0.5]=1
                 pred[pred<0.5]=0
+                total_amount_for_accuracy+=len(y)
                 for n,single_pred in enumerate(pred):
                     if single_pred[0]==y[n][0] and single_pred[1]==y[n][1]:
                         correct_num+=1
                 process_print(i+1, length)
                 if (i%5==0 and i!=0) or i==length-1:
                     torch.save(self.model.state_dict(), self.dir+'/regression.pt')
-                    accu=correct_num/(i-recorder+1) # calculate the accuracy for every 1000 times or less
-                    recorder=i
+                    accu=correct_num/total_amount_for_accuracy
+                    total_amount_for_accuracy=0
+                    correct_num=0
                     self.accuracy_log['train'].append(accu)
                     if do_print==True:
                         print("\nEpoch {}, train loss = {}, train accuracy = {}".format(epoch+1, loss, accu))
@@ -148,8 +175,8 @@ class RegExe():
                         self.test(do_print=True)
                     else:
                         self.test(do_print=False)
-                    self.visualize()
-                    correct_num=0
+                    fig=self.visualize()
+                    plt.close(fig)
                     with open(self.dir+'/Reg_process_record.txt', 'w') as file:
                         file.write("time={}\n".format(time.time()))
                         file.write("Epoch {}/{}, {}/{}\n".format(epoch+1, Epochs, i+1, length))
@@ -159,6 +186,7 @@ class RegExe():
                         file.write("test_accuracy={}\n".format(self.accuracy_log['test']))
                 if i+1==length:
                     break
+        print("RegExe: training finished.")
     def load(self, load_unsup=True):
         '''
         Used to load the state dict of the regression model, as well as STDP model.
@@ -168,6 +196,7 @@ class RegExe():
         if torch.cuda.is_available()==True:
             loadmap='cuda'
         self.model.load_state_dict(torch.load(self.dir+'/regression.pt', map_location=loadmap))
+        print("RegExe: classsifier model loaded.")
         if load_unsup==True:
             self.unsup_exe.load()
     def visualize(self, save=True) -> matplotlib.figure.Figure:
@@ -196,4 +225,5 @@ class RegExe():
         plt.tight_layout()
         if save==True:
             fig.savefig(self.dir+'/reg_result.jpg')
+            print("RegExe: visualization chart saved.")
         return fig

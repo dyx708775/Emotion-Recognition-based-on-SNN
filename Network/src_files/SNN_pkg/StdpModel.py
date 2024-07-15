@@ -184,6 +184,107 @@ class EEG_STDPModel(nn.Module):
         liquid_state=torch.exp(self.b3_lif.v)
         return liquid_state
 
+class EEG_Double(nn.Module):
+    def __init__(self, decrease_factor = 0.5):
+        self.decrease_factor=decrease_factor
+        super().__init__()
+        self.b1_linear=layer.Linear(14,14,bias=False)
+        self.b1_lif=neuron.LIFNode(v_threshold=7.)
+        self.b1_cache=0
+        self.b2_linear=layer.Linear(14,500,bias=False)
+        self.b2_lif=neuron.LIFNode(v_threshold=7.)
+        self.b2_cache=0
+        self.rates=[]  # Used to record the firing rates of each LIF layer while training.
+        self.synapse_list=[
+            [self.b1_linear, self.b1_lif],
+            [self.b2_linear, self.b2_lif]
+          ]
+        for param in self.parameters():
+            torch.nn.init.normal_(param.data, mean=0.8, std=0.05)
+            param.data=torch.clamp(param.data, min=0, max=1)
+    def __getitem__(self, index):
+        return self.synapse_list[index]
+    def __len__(self):
+        return len(self.synapse_list)
+    def forward(self, x, record_rate: bool = False, auto_reset: bool = True):
+        '''
+        x: shape [batch_size, 14, time_step]
+        out: [batch_size, 500]
+        '''
+        batch_size,l,time_step=x.shape
+        self.b1_cache=torch.zeros(batch_size,14)
+        if torch.cuda.is_available()==True:
+            self.b1_cache=self.b1_cache.cuda()
+        if auto_reset==True:
+            functional.reset_net(self)
+        for i in range(time_step):
+            with torch.no_grad():
+                inp=x[:,:,i]  # shape: [batch_size, 14]
+            inp=self.b1_linear(inp)
+            inp+=self.decrease_factor*self.b1_cache  # recurrent structure
+            inp=self.b1_lif(inp)
+            self.b1_cache=inp
+            inp=self.b2_linear(inp)
+            inp=self.b2_lif(inp)
+            self.b2_cache=inp
+            if record_rate==True and i==time_step-1:
+                # Then record the firing rates of each neuron layer.
+                rate_list=[]
+                n_1=self.b1_cache[0].detach()
+                n_2=self.b2_cache[0].detach()
+                rate_list.append((n_1.sum()/len(n_1)).cpu().item())
+                rate_list.append((n_2.sum()/len(n_2)).cpu().item())
+                self.rates=rate_list
+        liquid_state=torch.exp(self.b2_lif.v)
+        return liquid_state
+
+class EEG_SequentialCompressionUnit(nn.Module):
+    def __init__(self, mode="spiking", channel_amount=32):
+        super().__init__()
+        self.channel_amount=channel_amount
+        self.cache=0
+        self.rates=None
+        self.linear=layer.Linear(channel_amount,channel_amount, bias=False)
+        if mode=="spiking":
+            self.neuron=neuron.LIFNode(tau=10.0, v_threshold=3.0, decay_input=False)
+        else:
+            self.neuron=neuron.IFNode(v_threshold=1.2)
+        self.synapse_list=[
+        [self.linear, self.neuron]
+        ]
+        for param in self.parameters():
+            torch.nn.init.normal_(param.data, mean=0.2, std=0.05)
+            param.data=torch.clamp(param.data, min=0, max=1)
+    def __getitem__(self, index):
+        return self.synapse_list[index]
+    def __len__(self):
+        return len(self.synapse_list)
+    def forward(self, x, record_rate: bool = False, auto_reset: bool = True):
+        '''
+        x: shape [batch_size, channel_amount, time_step]
+        out: [batch_size, channel_amount]
+        '''
+        batch_size,l,time_step=x.shape
+        self.cache=torch.zeros(batch_size,self.channel_amount)
+        if torch.cuda.is_available()==True:
+            self.cache=self.cache.cuda()
+        if auto_reset==True:
+            functional.reset_net(self)
+        for i in range(time_step):
+            with torch.no_grad():
+                inp=x[:,:,i]  # shape: [batch_size, channel_amount]
+            inp=inp+2*self.linear(self.cache)/self.channel_amount
+            inp=self.neuron(inp)
+            self.cache=inp
+            if record_rate==True and i==time_step-1:
+                # Then record the firing rates of each neuron layer.
+                rate_list=[]
+                n=self.cache[0].detach()
+                rate_list.append((n.sum()/len(n)).cpu().item())
+                self.rates=rate_list
+        liquid_state=torch.exp(self.neuron.v)
+        return liquid_state
+
 def w_dep_factor(a: float, w: torch.Tensor) ->torch.Tensor:
     '''
     Weight Dependence Factor for STDPLearner. More details
@@ -213,15 +314,15 @@ class STDPExe():
         '''
         self.dir=store_dir
         if torch.cuda.is_available()==True:
-            print("STDP: Use CUDA")
+            print("STDPExe: Use CUDA")
             self.device=torch.device("cuda")
         else:
-            print("STDP: Use CPU")
+            print("STDPExe: Use CPU")
             self.device=torch.device("cpu")
         self.model=model.to(self.device)
         self.train_data=train_data
         self.test_data=test_data
-        self.optim=torch.optim.SGD(self.model.parameters(), lr=1e-1, momentum=0)
+        self.optim=torch.optim.SGD(self.model.parameters(), lr=0.05, momentum=0)
         self.pre_wdf=lambda w: w_dep_factor(3e-3,w)  # 'wdf' means weight-dependence factor, see Morrison et al. (2018)
         self.post_wdf=lambda w: w_dep_factor(4e-3,w)
         self.stdp_learners=[
@@ -253,6 +354,7 @@ class STDPExe():
         if torch.cuda.is_available()==True:
             location='cuda'
         self.model.load_state_dict(torch.load(self.dir+"/STDPModel.pt", map_location=location))
+        print("STDPExe: STDP model loaded.")
     def calc_Cl(self):
         Cl_list=[]
         for i in range(len(self.model)):
@@ -279,6 +381,7 @@ class STDPExe():
             2.3 feature.jpg: a graphic recording forward process if it is defined in visualize().
         3. STDPModel.pt: the state directory of the STDP model.
         '''
+        print("STDPExe: start training.")
         for epoch in range(epochs):
             self.model.train()
             for index,(x,y) in enumerate(self.train_data):
@@ -296,15 +399,18 @@ class STDPExe():
                         file.write("epoch {}/{}, {}/{}\n".format(epoch+1, epochs, index+1, len(self.train_data)))
                         file.write("Cl={}\n".format(self.Cl_list))
                         file.write("spiking_rates={}\n".format(self.history_rates))
-                    figs=self.visualize(True)
-                    plt.close()
+                    fig1, fig2, fig3 = self.visualize(True)
+                    plt.close(fig1)
+                    plt.close(fig2)
+                    plt.close(fig3)
                     if save==True:
                         torch.save(self.model.state_dict(), self.dir+"/STDPModel.pt")
-                        print("Model saved.")
+                        print("STDPExe: Model saved.")
                 if all(B_list):  # Whether all the Cl values are less than 1e-5
-                    print("The Model has converged.")
+                    print("STDPExe: The Model has converged.")
                     break
             self.logger.write_log()
+            print("STDPExe: training finished.")
     def visualize(self, save=True) -> tuple:
         plt.rcParams['axes.unicode_minus']=False
         '''
@@ -359,9 +465,10 @@ class STDPExe():
             cl_fig.savefig(self.dir+"/cl.jpg")
             feature_fig.savefig(self.dir+"/feature.jpg")
             firing_rate_fig.savefig(self.dir+"/firing_rate.jpg")
-            print("STDP Charts saved.")
+            print("STDPExe: visualization Charts saved.")
         return cl_fig, firing_rate_fig, feature_fig
     def test(self, save=True):
+        print("STDPExe: start testing.")
         with torch.no_grad():
             test_fig=plt.figure(figsize=(10,12))
             data_iter=iter(self.test_data)
@@ -386,5 +493,6 @@ class STDPExe():
             if save==True:
                 test_fig.savefig("{}/3_sample_test.jpg".format(self.dir))
                 print("Chart saved")
+            print("STDPExe: test finished.")
             return test_fig
 

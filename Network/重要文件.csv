@@ -1,0 +1,4 @@
+,文件路径,名称,类别,描述,时间
+0,./Network/model/STDP/EEG/STDP_model_07031659.tar.gz,EEG脉冲输入液态机,模型文件,,1719997140.0
+1,./Network/model/Regression/Reg_model_07090035.tar.gz,EEG液状态深度分类器,分类器模型,含两个隐藏层的深度网络，接受EEG脉冲输入液态机的液状态输出,1720456500.0
+2,./Network/model/Regression/Reg_model_07072210.tar.gz,EEG脉冲输入液状态逻辑回归分类器,模型文件,,1720361400.0
