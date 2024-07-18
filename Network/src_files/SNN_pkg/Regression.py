@@ -10,6 +10,7 @@ import matplotlib.pyplot as plt
 import matplotlib
 import time
 import math
+import ast
 
 from .tools import process_print
 
@@ -83,10 +84,22 @@ class RegExe():
         self.dir=store_dir
         self.train_data=train_data 
         self.test_data=test_data
-        self.optimizer=optim.Adam(self.model.parameters())
+        self.optimizer=optim.Adam(self.model.parameters(), lr=5e-4)
         self.loss_fn=nn.BCELoss()
         self.loss_log={'train':[], 'test':[]}
         self.accuracy_log={'train':[], 'test':[]}
+    def with_record(self):
+        with open("{}/Reg_process_record.txt".format(self.dir), 'r') as file:
+            content=file.read()
+            content=content.split('\n')
+        get_list = lambda i: ast.literal_eval((content[i].split('='))[1])
+        self.loss_log["train"]=get_list(2)
+        self.loss_log["test"]=get_list(3)
+        self.accuracy_log["train"]=get_list(4)
+        self.accuracy_log["test"]=get_list(5)
+        print("RegExe: current record length:")
+        print("    train: {}, {}".format(len(self.loss_log["train"]), len(self.accuracy_log["train"])))
+        print("    test: {}, {}".format(len(self.loss_log["test"]), len(self.accuracy_log["test"])))
     def __forward(self, x):
         '''
         This method is aimed to connect STDP model and the regression model.
@@ -99,7 +112,9 @@ class RegExe():
     def __call__(self, x, logits=False):
         pred=self.__forward(x)
         if logits==False:
-            return pred.argmax(1)
+            pred[pred>=0.5]=1.
+            pred[pred<0.5]=0.
+            return pred
         else:
             return pred
     def test(self, length=None, do_print=True):

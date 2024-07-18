@@ -1,7 +1,7 @@
 # By Xiangnan Zhang, School of Future Technologies, Beijing Institute of Technology
 # This is the definition of the STDP-based model in Affective Computing Program
 # Dependency: SpikingJelly, PyTorch, NumPy, SciPy, MatPlotLib
-# Modified: 2024.6.14
+# Modified: 2024.7.17
 
 from spikingjelly.activation_based import neuron,layer,functional,learning
 import torch
@@ -14,6 +14,7 @@ from typing import *
 import matplotlib.pyplot as plt
 from IPython.display import clear_output
 import time
+import ast
 
 from .tools import process_print, Logger
 
@@ -248,12 +249,16 @@ class EEG_SequentialCompressionUnit(nn.Module):
         if mode=="spiking":
             self.neuron=neuron.LIFNode(tau=10.0, v_threshold=3.0, decay_input=False)
         else:
-            self.neuron=neuron.IFNode(v_threshold=1.2)
+            self.neuron=neuron.LIFNode(tau=6.0, v_threshold=3.0, decay_input=False)
         self.synapse_list=[
         [self.linear, self.neuron]
         ]
+        if mode=="spiking":
+            init_mean=0.2
+        else:
+            init_mean=0.8
         for param in self.parameters():
-            torch.nn.init.normal_(param.data, mean=0.2, std=0.05)
+            torch.nn.init.normal_(param.data, mean=init_mean, std=0.05)
             param.data=torch.clamp(param.data, min=0, max=1)
     def __getitem__(self, index):
         return self.synapse_list[index]
@@ -295,7 +300,7 @@ def w_dep_factor(a: float, w: torch.Tensor) ->torch.Tensor:
     
 class STDPExe():
     '''
-    The following attributes are expected to be accessed in public:
+    The following attributes are able to be accessed in public:
     1. dir: if you want to change the saving directory.
     2. train_data
     3. self_data
@@ -306,6 +311,7 @@ class STDPExe():
     3. calc_Cl(): to calculate the current Cl values.
     4. train()
     5. visualize()
+    6. with_record(): load Cl list and history rates in 'dir/STDP_process_record.txt'.
     '''
     def __init__(self, model: nn.Module, store_dir: str, train_data: Iterable[Tuple], test_data: Iterable[Tuple]):
         '''
@@ -331,6 +337,26 @@ class STDPExe():
         self.Cl_list=[] # Used to store all the Cl value during training
         self.logger=Logger(self)
         self.history_rates=[]  # histroy firing rates of each neuron layers during training.
+    def with_record(self):
+    '''
+    If you have an existed STDP model and want to train it further,
+    you can use this function to load self.Cl_list and self.history_rates
+    from file "self.dir/STDP_process_record.txt". 
+    '''
+        with open("STDP_process_record.txt", 'f') as file:
+            content=file.read().split('\n')[-2:]
+        get_list = lambda i: ast.literal_eval(
+            content[i].split('=')[1]
+            )
+        self.Cl_list=get_list(0)
+        self.history_rates=get_list(1)
+        print(
+        '''
+        STDPExe: record length:
+            Cl_list: {}
+            history_rates: {}
+        '''.format(len(self.Cl_list), len(self.history_rates))
+        )
     def forward(self, x: torch.Tensor, training=False) -> torch.Tensor:
         '''
         x: a batch of tensors that will be processed into self.model.
@@ -348,7 +374,7 @@ class STDPExe():
         return pred
     def load(self):
         '''
-        Load STDP model's state directory from the directory.
+        Load STDP model's state dictionary from the directory.
         '''
         location='cpu'
         if torch.cuda.is_available()==True:

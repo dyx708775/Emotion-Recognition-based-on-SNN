@@ -1,3 +1,9 @@
+# Xiangnan Zhang 2024, School of Future Technologies, Beijing Institute of Technology
+# modified: 2024.7.18
+# Dependencies: PyTorch, NumPy, SpikingJelly
+
+# This is the definition of relative tool functions and classes.
+
 import sys
 import random
 import scipy
@@ -7,6 +13,7 @@ import torch
 import numpy as np
 from spikingjelly.activation_based import neuron, layer
 from typing import *
+import ast
 
 def process_print(current_number, maximum):
     '''
@@ -88,7 +95,8 @@ class SimpleDeap(torch.utils.data.Dataset):
         in_memory: the amount to stored into the memory.
         deap_dir: the directory of the folder that obeys preferred store format
         Parameters in argv:
-        1. index
+        1. index: list
+        2. findex: txt file name
         2. memory_num = 1
         3. channel_amount = 32
         4. mode = 'spiking' (or prep, origin, BSA)
@@ -100,7 +108,13 @@ class SimpleDeap(torch.utils.data.Dataset):
         else:
             self.channel_amount=32
         self.dir=deap_dir
-        if "index" in argv:
+        if "findex" in argv:
+            fname=argv["findex"]
+            self.index=''
+            with open(fname, 'r') as file:
+                index_str=file.read()
+                self.index=ast.literal_eval(index_str)
+        elif "index" in argv:
             self.index=argv["index"]
         else:
             self.index=[] 
@@ -161,7 +175,7 @@ class SimpleDeap(torch.utils.data.Dataset):
             x[x>0]=1.
             x[x<=0]=0.
         elif self.mode=="prep":
-            x=x.abs()
+            x=x-x.min()
             x=x/x.max()
         else:
             x=x
