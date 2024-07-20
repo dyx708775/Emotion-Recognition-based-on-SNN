@@ -338,11 +338,11 @@ class STDPExe():
         self.logger=Logger(self)
         self.history_rates=[]  # histroy firing rates of each neuron layers during training.
     def with_record(self):
-    '''
-    If you have an existed STDP model and want to train it further,
-    you can use this function to load self.Cl_list and self.history_rates
-    from file "self.dir/STDP_process_record.txt". 
-    '''
+        '''
+        If you have an existed STDP model and want to train it further,
+        you can use this function to load self.Cl_list and self.history_rates
+        from file "self.dir/STDP_process_record.txt". 
+        '''
         with open("STDP_process_record.txt", 'f') as file:
             content=file.read().split('\n')[-2:]
         get_list = lambda i: ast.literal_eval(

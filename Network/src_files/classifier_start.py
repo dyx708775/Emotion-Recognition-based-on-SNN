@@ -8,7 +8,7 @@ import torch
 import SNN_pkg as pkg
 
 DEAP_dir="/home/featurize/work/Project/DEAP"
-train_data, test_data = pkg.tools.SimpleDeap(DEAP_dir, mode="BSA", memory_num=10).split(0.1)
+train_data, test_data = pkg.tools.SimpleDeap(DEAP_dir, mode="spiking", memory_num=10).split(0.1)
 print("test length: {}".format(len(test_data)))
 train_ds=torch.utils.data.DataLoader(train_data, batch_size=8)
 test_ds=torch.utils.data.DataLoader(test_data, batch_size=32)

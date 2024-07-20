@@ -88,6 +88,7 @@ class RegExe():
         self.loss_fn=nn.BCELoss()
         self.loss_log={'train':[], 'test':[]}
         self.accuracy_log={'train':[], 'test':[]}
+        self.avg_grad=[]
     def with_record(self):
         with open("{}/Reg_process_record.txt".format(self.dir), 'r') as file:
             content=file.read()
@@ -137,15 +138,16 @@ class RegExe():
                 loss+=self.loss_fn(pred, y)
                 pred[pred>=0.5]=1
                 pred[pred<0.5]=0
+                as_int = lambda x: x.int().item()
                 for n,single_pred in enumerate(pred):
-                    if single_pred[0]==y[n][0] and single_pred[1]==y[n][1]:
-                        correct_num+=1
+                    if as_int(single_pred[0])==as_int(y[n][0]) and as_int(single_pred[1])==as_int(y[n][1]):
+                        correct_num+=1.
                 process_print(i+1, length)
                 if i+1==length:
                     break
             loss_mean=loss/length
             loss_mean=loss_mean.cpu().item()
-            accuracy=float(correct_num)/len(self.test_data.dataset)
+            accuracy=correct_num/len(self.test_data.dataset)
             self.loss_log['test'].append(loss_mean)
             self.accuracy_log['test'].append(accuracy)
             if do_print==True:
@@ -170,13 +172,21 @@ class RegExe():
                 loss=self.loss_fn(pred, y)
                 self.loss_log['train'].append(loss.cpu().item())
                 loss.backward()
+                avg_grad_list=[]
+                for param in self.model.parameters():
+                    grad=param.grad.flatten()
+                    grad=torch.abs(grad)
+                    avg_grad=grad.sum().cpu().item()/len(grad)
+                    avg_grad_list.append(avg_grad)
+                self.avg_grad.append(avg_grad_list)
                 self.optimizer.step()
                 pred[pred>=0.5]=1
                 pred[pred<0.5]=0
                 total_amount_for_accuracy+=len(y)
+                as_int = lambda x: x.int().item()
                 for n,single_pred in enumerate(pred):
-                    if single_pred[0]==y[n][0] and single_pred[1]==y[n][1]:
-                        correct_num+=1
+                    if as_int(single_pred[0])==as_int(y[n][0]) and as_int(single_pred[1])==as_int(y[n][1]):
+                        correct_num+=1.
                 process_print(i+1, length)
                 if (i%5==0 and i!=0) or i==length-1:
                     torch.save(self.model.state_dict(), self.dir+'/regression.pt')
@@ -190,8 +200,9 @@ class RegExe():
                         self.test(do_print=True)
                     else:
                         self.test(do_print=False)
-                    fig=self.visualize()
+                    fig, grad_chart = self.visualize()
                     plt.close(fig)
+                    plt.close(grad_chart)
                     with open(self.dir+'/Reg_process_record.txt', 'w') as file:
                         file.write("time={}\n".format(time.time()))
                         file.write("Epoch {}/{}, {}/{}\n".format(epoch+1, Epochs, i+1, length))
@@ -199,6 +210,7 @@ class RegExe():
                         file.write("test_loss={}\n".format(self.loss_log['test']))
                         file.write("train_accuracy={}\n".format(self.accuracy_log['train']))
                         file.write("test_accuracy={}\n".format(self.accuracy_log['test']))
+                        file.write("avg_grad={}\n".format(self.avg_grad))
                 if i+1==length:
                     break
         print("RegExe: training finished.")
@@ -238,7 +250,16 @@ class RegExe():
         plt.xlabel("Testing times")
         plt.ylabel("Accuracy")
         plt.tight_layout()
+        grad_chart=plt.figure()
+        plt.title("Gradient Chart")
+        plt.xlabel("Backward Time")
+        tensor_num=len(self.avg_grad[0])
+        for i in range(tensor_num):
+            plt.plot([x[i] for x in self.avg_grad], label="tensor {}".format(i+1))
+        plt.legend()
+        plt.tight_layout()
         if save==True:
             fig.savefig(self.dir+'/reg_result.jpg')
+            grad_chart.savefig(self.dir+'/grad.jpg')
             print("RegExe: visualization chart saved.")
-        return fig
+        return fig, grad_chart
