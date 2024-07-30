@@ -1,7 +1,7 @@
 # By Xiangnan Zhang, School of Future Technologies, Beijing Institute of Technology
 # This is the definition of the STDP-based model in Affective Computing Program
 # Dependency: SpikingJelly, PyTorch, NumPy, SciPy, MatPlotLib
-# Modified: 2024.7.17
+# Modified: 2024.7.24
 
 from spikingjelly.activation_based import neuron,layer,functional,learning
 import torch
@@ -12,7 +12,6 @@ import numpy as np
 from scipy import ndimage
 from typing import *
 import matplotlib.pyplot as plt
-from IPython.display import clear_output
 import time
 import ast
 
@@ -34,6 +33,33 @@ class DOG():  # Different of Gossian
         else:
             res_tensor.cpu()
         return res_tensor
+
+class WTA_LIFNode(neuron.LIFNode):
+    '''
+    LIF node that obeys winner-takes-all mechanism.
+    '''
+    pre_v=0
+    def neuronal_fire(self):
+        can_firing_arg = self.v.argmax(1)
+        mask=torch.zeros_like(self.v, dtype=torch.float32)
+        mask = mask.cuda() if torch.cuda.is_available() else mask
+        for i,arg in enumerate(can_firing_arg):
+            mask[i, arg.item()] = 1.
+        WTA_v = torch.mul(self.v, mask)
+        return self.surrogate_function(WTA_v - self.v_threshold)
+    def neuronal_reset(self, spike):
+        self.pre_v=self.v
+        spike=self.surrogate_function(self.v - self.v_threshold)
+        if self.detach_reset:
+            spike_d = spike.detach()
+        else:
+            spike_d = spike
+        if self.v_reset is None:
+            # soft reset
+            self.v = self.jit_soft_reset(self.v, spike_d, self.v_threshold)
+        else:
+            # hard reset
+            self.v = self.jit_hard_reset(self.v, spike_d, self.v_reset)
 
 class CV_STDPModel(nn.Module):
     def __init__(self):
@@ -108,69 +134,57 @@ class CV_STDPModel(nn.Module):
             pred+=self.__single_forward(x, do_record_rate)
         return (pred/T).view(-1, 4, 4)
 
-class EEG_STDPModel(nn.Module):
+class EEG_LSM(nn.Module):
     def __init__(self):
         super().__init__()
-        self.b1_linear=layer.Linear(14,20,bias=False)
-        self.b1_lif=neuron.LIFNode(v_threshold=5.)
+        self.b1_linear=layer.Linear(32,64,bias=False)
+        self.b1_neuron=WTA_LIFNode(tau=80000., v_threshold=1.2, decay_input=False)
         self.b1_cache=0
-        self.b1_recurrent=layer.Linear(20,20,bias=False)
-        self.b2_linear=layer.Linear(20,20,bias=False)
-        self.b2_lif=neuron.LIFNode(v_threshold=5.)
+        self.b2_linear=layer.Linear(64,128,bias=False)
+        self.b2_neuron=WTA_LIFNode(tau=80000., v_threshold=1.2, decay_input=False)
         self.b2_cache=0
-        self.b2_recurrent=layer.Linear(20,20,bias=False)
-        self.b3_linear=layer.Linear(20,500,bias=False)
-        self.b3_lif=neuron.LIFNode(v_threshold=9999999999999999.)
+        self.b2_recurrent=layer.Linear(128,128,bias=False)
+        self.b3_linear=layer.Linear(128,128,bias=False)
+        self.b3_neuron=WTA_LIFNode(tau=80000., v_threshold=1.2, decay_input=False)
         self.b3_cache=0
-        self.b3_recurrent=layer.Linear(500,500,bias=False)
         self.rates=[]  # Used to record the firing rates of each LIF layer while training.
         self.synapse_list=[
-            [self.b1_linear, self.b1_lif],
-          #  [self.b1_recurrent, self.b1_lif],
-            [self.b2_linear, self.b2_lif],
-          #  [self.b2_recurrent, self.b2_lif],
-            [self.b3_linear, self.b3_lif],
-          #  [self.b3_recurrent, self.b3_lif]
+            [self.b1_linear, self.b1_neuron],
+            [self.b2_linear, self.b2_neuron],
+            [self.b2_recurrent, self.b2_neuron],
+            [self.b3_linear, self.b3_neuron]
           ]
         for param in self.parameters():
-            torch.nn.init.normal_(param.data, mean=0.8, std=0.5)
+            torch.nn.init.normal_(param.data, mean=0.65, std=0.3)
             param.data=torch.clamp(param.data, min=0, max=1)
-   #    param=next(self.b3_recurrent.parameters())
-   #    torch.nn.init.normal_(param.data, mean=0.2, std=0.5)
-  #     param.data=torch.clamp(param.data, min=0, max=1)
     def __getitem__(self, index):
         return self.synapse_list[index]
     def __len__(self):
         return len(self.synapse_list)
     def forward(self, x, record_rate: bool = False, auto_reset: bool = True):
         '''
-        x: shape [batch_size, 14, time_step]
+        x: shape [batch_size, 32, time_step]
         out: [batch_size, 500]
         '''
         batch_size,l,time_step=x.shape
-        self.b1_cache=torch.zeros(batch_size,20)
-        self.b2_cache=torch.zeros(batch_size,20)
-        self.b3_cache=torch.zeros(batch_size,500)
+        self.b1_cache=torch.zeros(batch_size,64)
+        self.b2_cache=torch.zeros(batch_size,128)
         if torch.cuda.is_available()==True:
             self.b1_cache=self.b1_cache.cuda()
             self.b2_cache=self.b2_cache.cuda()
-            self.b3_cache=self.b3_cache.cuda()
         if auto_reset==True:
             functional.reset_net(self)
         for i in range(time_step):
-            with torch.no_grad():
-                inp=x[:,:,i]  # shape: [batch_size, 14]
+            inp=x[:,:,i]  # shape: [batch_size, 32]
             inp=self.b1_linear(inp)
-         #  y_cache=self.b1_recurrent(self.b1_cache)
-            inp=self.b1_lif(inp)
+            inp=self.b1_neuron(inp)
             self.b1_cache=inp
             inp=self.b2_linear(inp)
-         #  y_cache=self.b2_recurrent(self.b2_cache)
-            inp=self.b2_lif(inp)
+            y_cache=self.b2_recurrent(self.b2_cache)
+            inp=self.b2_neuron(inp+y_cache)
             self.b2_cache=inp
             inp=self.b3_linear(inp)
-          # y_cache=self.b3_recurrent(self.b3_cache)
-            inp=self.b3_lif(inp)
+            inp=self.b3_neuron(inp)
             self.b3_cache=inp
             if record_rate==True and i==time_step-1:
                 # Then record the firing rates of each neuron layer.
@@ -182,7 +196,62 @@ class EEG_STDPModel(nn.Module):
                 rate_list.append((n_2.sum()/len(n_2)).cpu().item())
                 rate_list.append((n_3.sum()/len(n_3)).cpu().item())
                 self.rates=rate_list
-        liquid_state=torch.exp(self.b3_lif.v)
+        liquid_state=torch.exp(self.b3_neuron.pre_v)
+        return liquid_state
+
+class EEG_SimpleLSM(nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.trans_neuron = WTA_LIFNode(tau=3., v_threshold=1.5, decay_input=False)
+        self.b1_linear=layer.Linear(32,64,bias=False)
+        self.b1_neuron=WTA_LIFNode(tau=80000., v_threshold=1.2, decay_input=False)
+        self.b1_cache=0
+        self.b2_linear=layer.Linear(64,128,bias=False)
+        self.b2_neuron=WTA_LIFNode(tau=80000., v_threshold=1.2, decay_input=False)
+        self.b2_cache=0
+        self.rates=[]  # Used to record the firing rates of each LIF layer while training.
+        self.synapse_list=[
+            [self.b1_linear, self.b1_neuron],
+            [self.b2_linear, self.b2_neuron]
+          ]
+        for param in self.parameters():
+            torch.nn.init.normal_(param.data, mean=0.8, std=0.05)
+            param.data=torch.clamp(param.data, min=0, max=1)
+    def __getitem__(self, index):
+        return self.synapse_list[index]
+    def __len__(self):
+        return len(self.synapse_list)
+    def forward(self, x, record_rate: bool = False, auto_reset: bool = True):
+        '''
+        x: shape [batch_size, 32, time_step]
+        out: [batch_size, 500]
+        '''
+        batch_size,l,time_step=x.shape
+        self.b1_cache=torch.zeros(batch_size,64)
+        self.b2_cache=torch.zeros(batch_size,128)
+        if torch.cuda.is_available()==True:
+            self.b1_cache=self.b1_cache.cuda()
+            self.b2_cache=self.b2_cache.cuda()
+        if auto_reset==True:
+            functional.reset_net(self)
+        for i in range(time_step):
+            inp=x[:,:,i]  # shape: [batch_size, 32]
+            inp=self.trans_neuron(inp)
+            inp=self.b1_linear(inp)
+            inp=self.b1_neuron(inp)
+            self.b1_cache=inp
+            inp=self.b2_linear(inp)
+            inp=self.b2_neuron(inp)
+            self.b2_cache=inp
+            if record_rate==True and i==time_step-1:
+                # Then record the firing rates of each neuron layer.
+                rate_list=[]
+                n_1=self.b1_cache[0].detach()
+                n_2=self.b2_cache[0].detach()
+                rate_list.append((n_1.sum()/len(n_1)).cpu().item())
+                rate_list.append((n_2.sum()/len(n_2)).cpu().item())
+                self.rates=rate_list
+        liquid_state=torch.exp(self.b2_neuron.pre_v)
         return liquid_state
 
 class EEG_Double(nn.Module):
@@ -240,26 +309,46 @@ class EEG_Double(nn.Module):
         return liquid_state
 
 class EEG_SequentialCompressionUnit(nn.Module):
-    def __init__(self, mode="spiking", channel_amount=32):
+    def __init__(self, mode="spiking", **argv):
+        '''
+        Parameters in argv:
+        1. channel amount: default 32
+        2. mode: spiking or realnum, default spiking
+        3. WTA: when treating the recurrent process, whether use winner-takes-all mechanism. Default True.
+        '''
         super().__init__()
-        self.channel_amount=channel_amount
+        # Following: Parameter Analysis
+        from_argv = lambda key,default: argv[key] if key in argv else default
+        self.channel_amount = from_argv("channel_amount", 32)
+        self.mode = from_argv("mode", "spiking")
+        self.WTA = from_argv("WTA", True)
+        # Following: Nodes in Calculation Chart
         self.cache=0
-        self.rates=None
-        self.linear=layer.Linear(channel_amount,channel_amount, bias=False)
-        if mode=="spiking":
-            self.neuron=neuron.LIFNode(tau=10.0, v_threshold=3.0, decay_input=False)
+        self.forward_linear=layer.Linear(self.channel_amount, self.channel_amount, bias=False)
+        self.recurrent_linear=layer.Linear(self.channel_amount, self.channel_amount, bias=False)
+        if self.mode=="spiking":
+            if self.WTA==True:
+                self.neuron = WTA_LIFNode(tau=6.0, v_threshold=3.0, decay_input=False)
+            else:
+                self.neuron=neuron.LIFNode(tau=10.0, v_threshold=3.0, decay_input=False)
         else:
             self.neuron=neuron.LIFNode(tau=6.0, v_threshold=3.0, decay_input=False)
         self.synapse_list=[
-        [self.linear, self.neuron]
+        [self.forward_linear, self.neuron],
+        [self.recurrent_linear, self.neuron]
         ]
-        if mode=="spiking":
+        # Following: Model Initialization
+        if self.mode=="spiking" and self.WTA is False:
             init_mean=0.2
+            init_std=0.08
         else:
             init_mean=0.8
+            init_std=0.2
         for param in self.parameters():
-            torch.nn.init.normal_(param.data, mean=init_mean, std=0.05)
+            torch.nn.init.normal_(param.data, mean=init_mean, std=init_std)
             param.data=torch.clamp(param.data, min=0, max=1)
+        # Following: Port
+        self.rates=None
     def __getitem__(self, index):
         return self.synapse_list[index]
     def __len__(self):
@@ -278,16 +367,21 @@ class EEG_SequentialCompressionUnit(nn.Module):
         for i in range(time_step):
             with torch.no_grad():
                 inp=x[:,:,i]  # shape: [batch_size, channel_amount]
-            inp=inp+2*self.linear(self.cache)/self.channel_amount
+                inp=self.forward_linear(inp)
+            if self.WTA is True:
+                inp=inp+self.recurrent_linear(self.cache)
+            else:
+                inp=inp+2*self.recurrent_linear(self.cache)/self.channel_amount
             inp=self.neuron(inp)
             self.cache=inp
-            if record_rate==True and i==time_step-1:
-                # Then record the firing rates of each neuron layer.
-                rate_list=[]
-                n=self.cache[0].detach()
-                rate_list.append((n.sum()/len(n)).cpu().item())
-                self.rates=rate_list
-        liquid_state=torch.exp(self.neuron.v)
+        if record_rate==True:
+            # Then record the voltage reset rates of each neuron layer.
+            rate_list=[]
+            spiking=self.neuron.v[0].detach()
+            spiking=(spiking<=1e-5).int().float()
+            rate_list.append((spiking.sum()/len(spiking)).cpu().item())
+            self.rates=rate_list
+        liquid_state=torch.exp(self.neuron.pre_v)
         return liquid_state
 
 def w_dep_factor(a: float, w: torch.Tensor) ->torch.Tensor:
@@ -303,8 +397,10 @@ class STDPExe():
     The following attributes are able to be accessed in public:
     1. dir: if you want to change the saving directory.
     2. train_data
-    3. self_data
-    4.Cl_list: storing all the Cl values during training process.
+    3. test_data
+    4. history_rates
+    5 .Cl_list: storing all the Cl values during training process.
+    6. dist_list: cotaining paramater distribution.
     The following methods are expected to be called in public:
     1. forward(x)
     2. load(): load the state directory of the STDP model.
@@ -328,34 +424,37 @@ class STDPExe():
         self.model=model.to(self.device)
         self.train_data=train_data
         self.test_data=test_data
-        self.optim=torch.optim.SGD(self.model.parameters(), lr=0.05, momentum=0)
-        self.pre_wdf=lambda w: w_dep_factor(3e-3,w)  # 'wdf' means weight-dependence factor, see Morrison et al. (2018)
-        self.post_wdf=lambda w: w_dep_factor(4e-3,w)
+        self.optim=torch.optim.SGD(self.model.parameters(), lr=1, momentum=0)
+        self.pre_wdf=lambda w: w_dep_factor(3e-3,w)   # 'wdf' means weight-dependence factor, see Morrison et al. (2018)
+        self.post_wdf=lambda w: w_dep_factor(4e-3,w) 
         self.stdp_learners=[
             learning.STDPLearner('s', self.model[i][0], self.model[i][1], 2, 2, self.pre_wdf, self.post_wdf) for i in range(len(self.model))
             ] 
         self.Cl_list=[] # Used to store all the Cl value during training
         self.logger=Logger(self)
         self.history_rates=[]  # histroy firing rates of each neuron layers during training.
+        self.dist_list=[]
     def with_record(self):
         '''
         If you have an existed STDP model and want to train it further,
         you can use this function to load self.Cl_list and self.history_rates
         from file "self.dir/STDP_process_record.txt". 
         '''
-        with open("STDP_process_record.txt", 'f') as file:
-            content=file.read().split('\n')[-2:]
+        with open("{}/STDP_process_record.txt".format(self.dir), 'r') as file:
+            content=file.read().split('\n')[-4:-1]
         get_list = lambda i: ast.literal_eval(
             content[i].split('=')[1]
             )
         self.Cl_list=get_list(0)
         self.history_rates=get_list(1)
+        self.dist_list=get_list(2)
         print(
         '''
-        STDPExe: record length:
-            Cl_list: {}
-            history_rates: {}
-        '''.format(len(self.Cl_list), len(self.history_rates))
+    STDPExe: record length:
+        Cl_list: {}
+        history_rates: {}
+        dist_list: {}
+        '''.format(len(self.Cl_list), len(self.history_rates), len(self.dist_list))
         )
     def forward(self, x: torch.Tensor, training=False) -> torch.Tensor:
         '''
@@ -394,7 +493,25 @@ class STDPExe():
             cl=cl/length
             Cl_list.append(cl)
         return Cl_list
-    def train(self, epochs: int, save=True):
+    def calc_distribution(self):
+        dist_list=[]
+        for i in range(len(self.model)):
+            layer_params=self.model[i][0].parameters()
+            for param in layer_params:
+                param = torch.clamp(param, 0, 1)
+                frequency=np.zeros(10)
+                param=param.data.flatten()
+                for element in param:
+                    arg=int(element*10)
+                    if arg>10:
+                        raise ValueError("Unexpected parameter: {}".format(element))
+                    if arg==10:
+                        arg-=1
+                    frequency[arg]+=1.
+                frequency=frequency/frequency.sum()
+                dist_list.append(frequency.tolist())
+        return dist_list
+    def train(self, save=True):
         '''
         save: Bool, wether save model's state dictionary
         After launching, you will get following files under store_dir:
@@ -403,46 +520,54 @@ class STDPExe():
             1.2 STDP_process_record.txt: a log file recording training process. Updated during each epoch.
         2. charts (jpg files):
             2.1 cl.jpg: a chart recording the alternation of Cls.
-            2.2 firing_rate.jpg: a chart recording the firing rates of each neuron layer. 
-            2.3 feature.jpg: a graphic recording forward process if it is defined in visualize().
+            2.2 firing_rate.jpg: a chart recording the firing rate of each neuron layer. 
+            2.3 distribution.jpg: recording parameter distribution.
+            2.4 feature.jpg: a graphic recording forward process if it is defined in visualize().
         3. STDPModel.pt: the state directory of the STDP model.
         '''
         print("STDPExe: start training.")
-        for epoch in range(epochs):
-            self.model.train()
+        epoch=0
+        not_converged=True
+        self.model.train()
+        while not_converged:
+            print("STDPExe: epoch {} started".format(epoch+1))
             for index,(x,y) in enumerate(self.train_data):
                 self.optim.zero_grad()
                 fire_rate=self.forward(x, True) # set record_rate=True, record the firing rates.
                 self.optim.step()
                 with torch.no_grad():
                     self.Cl_list.append(self.calc_Cl())
+                    self.dist_list.append(self.calc_distribution())
                 process_print(index+1, len(self.train_data))
-                B_list=[cl<=1e-5 for cl in self.Cl_list[-1]]
+                B_list=[cl<=2e-4 for cl in self.Cl_list[-1]]
                 if (index%5==0 and index!=0) or index==len(self.train_data)-1 or all(B_list):
                     print("")
                     with open(self.dir+'/STDP_process_record.txt', 'w') as file:
                         file.write("time={}\n".format(time.time()))
-                        file.write("epoch {}/{}, {}/{}\n".format(epoch+1, epochs, index+1, len(self.train_data)))
+                        file.write("epoch {}, {}/{}\n".format(epoch+1, index+1, len(self.train_data)))
                         file.write("Cl={}\n".format(self.Cl_list))
                         file.write("spiking_rates={}\n".format(self.history_rates))
-                    fig1, fig2, fig3 = self.visualize(True)
-                    plt.close(fig1)
-                    plt.close(fig2)
-                    plt.close(fig3)
+                        file.write("distribution={}\n".format(self.dist_list))
+                    figs = list(self.visualize(True))
+                    for fig_idx in range(len(figs)):
+                        plt.close(figs[fig_idx])
                     if save==True:
                         torch.save(self.model.state_dict(), self.dir+"/STDPModel.pt")
                         print("STDPExe: Model saved.")
                 if all(B_list):  # Whether all the Cl values are less than 1e-5
                     print("STDPExe: The Model has converged.")
+                    not_converged=False
                     break
             self.logger.write_log()
-            print("STDPExe: training finished.")
+            epoch+=1
+        print("STDPExe: training finished.")
     def visualize(self, save=True) -> tuple:
         plt.rcParams['axes.unicode_minus']=False
         '''
         The following charts will be created:
         1. cl_fig (cl.jpg) 
         2. firing_rate_fig (firing_rate.jpg)
+        3. dist_fig (distribution.jpg)
         3. feature_fig (feature.jpg)
         '''
         # visualization of Cl Chart:
@@ -456,14 +581,26 @@ class STDPExe():
         plt.legend()
         # Visualization of firing rates:
         firing_rate_fig=plt.figure()
-        plt.title("Firing Rates")
+        plt.title("Voltage Resetting Rate")
         plt.xlabel("Adjust Times")
-        plt.ylabel("rate (%)")
+        plt.ylabel("rate")
         n=len(self.history_rates[0])  # The amount of neuron layers
         for i in range(n):
             rates=[rate_list[i] for rate_list in self.history_rates]
             plt.plot(rates, label="Neurons {}".format(i+1))
         plt.legend()
+        # Visualization of parameter distribution:
+        dist_fig=plt.figure(figsize=(8, 6*len(self.model)))
+        freq_list=self.dist_list[-1]
+        x_label_list=['0.{}~0.{}'.format(i,i+1) for i in range(9)]
+        x_label_list.append('0.9~1.0')
+        for param_idx,single_list in enumerate(freq_list):
+            plt.subplot(len(freq_list), 1, param_idx+1)
+            plt.title("Distribution of Parameter {}".format(param_idx+1))
+            plt.ylabel("Frequency")
+            plt.bar(range(10), height=single_list)
+            plt.xticks(ticks=range(10), labels=x_label_list, rotation=30)
+        plt.tight_layout()
         # Visualization of Feature Map:
         feature_fig=plt.figure()
         if isinstance(self.model, CV_STDPModel):
@@ -491,8 +628,9 @@ class STDPExe():
             cl_fig.savefig(self.dir+"/cl.jpg")
             feature_fig.savefig(self.dir+"/feature.jpg")
             firing_rate_fig.savefig(self.dir+"/firing_rate.jpg")
+            dist_fig.savefig(self.dir+"/distribution.jpg")
             print("STDPExe: visualization Charts saved.")
-        return cl_fig, firing_rate_fig, feature_fig
+        return cl_fig, firing_rate_fig, dist_fig, feature_fig
     def test(self, save=True):
         print("STDPExe: start testing.")
         with torch.no_grad():
@@ -512,7 +650,7 @@ class STDPExe():
                     rates.append(self.model.rates)
                 n=len(rates[0])
                 for j in range(n):
-                    plt.plot(np.arange(time_step-7800)+7800, [x[j] for x in rates[7800:]], label="Neuron {}".format(j+1), linewidth=0.5)
+                    plt.plot(np.arange(time_step), [x[j] for x in rates], label="Neuron {}".format(j+1), linewidth=0.5)
                 plt.legend()
                 process_print(i+1,3)
             plt.tight_layout()

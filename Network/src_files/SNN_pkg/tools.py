@@ -76,6 +76,8 @@ def stochastic_for_stdp(amount :int, shape: tuple) -> List[Tuple]:
     ds=[(x, 1) for x in data]
     return ds
 
+
+
 class SimpleDeap(torch.utils.data.Dataset):
     '''
     This is a class that packs preprocessed DEAP data.
@@ -90,6 +92,8 @@ class SimpleDeap(torch.utils.data.Dataset):
         —— labels
             —— .npy
     '''
+
+
     def __init__(self, deap_dir: str, **argv):
         '''
         in_memory: the amount to stored into the memory.
@@ -99,78 +103,125 @@ class SimpleDeap(torch.utils.data.Dataset):
         2. findex: txt file name
         2. memory_num = 1
         3. channel_amount = 32
-        4. mode = 'spiking' (or prep, origin, BSA)
-        5. d_label = "basic"
+        4. mode = 'spiking' (or prep, origin, BSA, zzh)
+        5. d_label (download label name) = "basic"
+        6. time (seconds, then the timestep will be time*128) = None (select all)
         '''
+        from_argv = lambda key, default: argv[key] if key in argv else default
         self.argv=argv
-        if "channel_amount" in argv:
-            self.channel_amount=argv["channel_amount"]
-        else:
-            self.channel_amount=32
+        self.channel_amount = from_argv("channel_amount", 32)
+        self.time = from_argv("time", None)
         self.dir=deap_dir
+        self.should_shuffle=False
+        self.memory_num = from_argv("memory_num", 1)
+        self.mode = from_argv("mode", "spiking")
+        if self.mode == 'zzh' and self.time != None:
+            raise ValueError("Signals in zzh mode cannot be divided.")
+
         if "findex" in argv:
             fname=argv["findex"]
-            self.index=''
             with open(fname, 'r') as file:
                 index_str=file.read()
                 self.index=ast.literal_eval(index_str)
         elif "index" in argv:
             self.index=argv["index"]
         else:
-            self.index=[] 
-            for i in range(32):
-                for j in range(40):
-                    self.index.append((i,j)) # The ith person's jth test
-            random.shuffle(self.index)
+            if self.mode == "zzh":
+                self.index = list(range(5200))
+            else:
+                self.index=[] 
+                for i in range(32):
+                    for j in range(40):
+                        if self.time is None:
+                            self.index.append((i,j))
+                        else:
+                            for k in range(7680-self.time*128):
+                                self.index.append((i,j,k)) # The ith person's jth test, cutted from k
+        random.shuffle(self.index)
+
         if "d_label" in argv:
             self.d_label=argv["d_label"]
+        elif "findex" in argv:
+            if argv["findex"]=="index_test.txt":
+                self.d_label="test"
+            elif argv["findex"]=="index_train.txt":
+                self.d_label="train"
+            elif argv["findex"]=="index_valid.txt":
+                self.d_label="valid"
+            else:
+                self.d_label="basic"
         else:
             self.d_label="basic"
         with open("index_{}.txt".format(self.d_label), 'w') as file:
             file.write(str(self.index))
-        if "memory_num" in argv:
-            self.memory_num=argv["memory_num"]
-        else:
-            self.memory_num=1
-        if "mode" in argv:
-            self.mode=argv["mode"]
-        else:
-            self.mode="spiking"
+
         self.memory=dict()
+
+
     def split(self, test_ratio=0.1):
+        '''
+        Split the dataset into training, validation and testing.
+        '''
         test_len=int(len(self)*test_ratio)
-        train_len=len(self)-test_len
-        train_data=SimpleDeap(self.dir, **self.argv, index=self.index[:train_len], d_label="train")
-        test_data=SimpleDeap(self.dir, **self.argv, index=self.index[train_len:], d_label="test")
-        return train_data, test_data
+        train_len=len(self)-2*test_len
+        sub_SimpleDeap = lambda index_list, d_label_str: SimpleDeap(self.dir, **self.argv, index=index_list, d_label=d_label_str)
+        train_data=sub_SimpleDeap(self.index[:train_len], "train")
+        valid_data=sub_SimpleDeap(self.index[train_len:train_len+test_len], "valid")
+        test_data=sub_SimpleDeap(self.index[train_len+test_len:], "test")
+        return train_data, valid_data, test_data
+
+
     def __len__(self):
         return len(self.index)
+
+
     def __getitem__(self, i):
-        person, test = self.index[i]
+        if self.should_shuffle==True:
+            random.shuffle(self.index)
+            self.should_shuffle=False
+
+        if self.mode == "zzh":
+            person = self.index[i]
+        else:
+            if self.time is None:
+                person, test = self.index[i]
+            else:
+                person, test, start = self.index[i]
+
         if person in self.memory:
             mat=self.memory[person]
         else:
             if len(self.memory.keys()) >= self.memory_num:
                 first_key=list(self.memory.keys())[0]
                 del self.memory[first_key]
-            if self.mode!="BSA":
+            if self.mode=="BSA" or self.mode=="zzh":
+                mat=np.load("{}/signals/{}_signal_{}.npy".format(self.dir, self.mode, person))
+            else:
                 file_index="0{}".format(person+1) if person<9 else str(person+1)
                 mat=scipy.io.loadmat("{}/s{}.mat".format(self.dir, file_index))
-            else:
-                mat=np.load("{}/signals/BSA_signal_{}.npy".format(self.dir, person))
             self.memory[person]=mat
+
         if self.mode=="BSA":
             x=mat[test]
+        elif self.mode == "zzh":
+            x=mat
         else:
             x=mat['data'][test]
-        x=x[:self.channel_amount]
+        if self.time is None:
+            x = x[:self.channel_amount]
+        else:
+            x=x[:self.channel_amount, start:start+self.time*128]
         x=torch.tensor(x, dtype=torch.float32)
-        if self.mode=="BSA":
-            mat=np.load("{}/labels/BSA_labels_{}.npy".format(self.dir, person))
-            y=mat[test]
+
+        if self.mode=="BSA" or self.mode=="zzh":
+            mat=np.load("{}/labels/{}_labels_{}.npy".format(self.dir, self.mode, person))
+            y=mat
+            if self.mode == "BSA":
+                y=mat[test]
         else:
             y=mat['labels'][test][:2]
         y=torch.tensor(y, dtype=torch.float32)
+
         if self.mode=="spiking":
             x[x>0]=1.
             x[x<=0]=0.
@@ -179,10 +230,13 @@ class SimpleDeap(torch.utils.data.Dataset):
             x=x/x.max()
         else:
             x=x
-        if self.mode!="BSA":
+
+        if self.mode!="BSA" and self.mode!="zzh":
             y[y<5]=0.
             y[y>=5]=1.
+
         x=x.to(dtype=torch.float32)
         y=y.to(dtype=torch.float32)
+
         return x,y
 

@@ -1,4 +1,6 @@
 ,文件路径,名称,类别,描述,时间
-0,./Network/model/STDP/EEG/STDP_model_07031659.tar.gz,EEG脉冲输入液态机,模型文件,,1719997140.0
-1,./Network/model/Regression/Reg_model_07090035.tar.gz,EEG液状态深度分类器,分类器模型,含两个隐藏层的深度网络，接受EEG脉冲输入液态机的液状态输出,1720456500.0
-2,./Network/model/Regression/Reg_model_07072210.tar.gz,EEG脉冲输入液状态逻辑回归分类器,模型文件,,1720361400.0
+0,./Network/model/STDP/EEG/STDP_model_07031659.tar.gz,EEG脉冲输入液态机,模型文件,,1719997140
+1,./Network/model/Regression/Reg_model_07090035.tar.gz,EEG液状态深度分类器,分类器模型,含两个隐藏层的深度网络，接受EEG脉冲输入液态机的液状态输出,1720456500
+2,./Network/model/Regression/Reg_model_07072210.tar.gz,EEG脉冲输入液状态逻辑回归分类器,模型文件,,1720361400
+3,./Network/model/Regression/Reg_model_07211404.tar.gz,简单阈值编码+WTA机制+残差DNN分类,模型文件,简单阈值编码，仅供测试WTA及残差分类的性质,
+4,./Network/model/STDP/EEG/STDP_model_07281534.tar.gz,"""带自连接及WTA的LSM+ZZH编码""LSM模型",模型文件,,

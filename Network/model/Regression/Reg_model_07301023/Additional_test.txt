@@ -1,0 +1,3 @@
+AT_L0: test_length=256, loss=0.6362304091453552, accuracy=0.48046875
+AT_L1: test_length=640, loss=0.6585797667503357, accuracy=0.403125, pass=False
+AT finished.
