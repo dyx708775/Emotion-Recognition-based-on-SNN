@@ -126,17 +126,19 @@ class SimpleDeap(torch.utils.data.Dataset):
         elif "index" in argv:
             self.index=argv["index"]
         else:
+            file_num = 32
+            data_num_in_each_file = 40
             if self.mode == "zzh":
-                self.index = list(range(5200))
-            else:
-                self.index=[] 
-                for i in range(32):
-                    for j in range(40):
-                        if self.time is None:
-                            self.index.append((i,j))
-                        else:
-                            for k in range(7680-self.time*128):
-                                self.index.append((i,j,k)) # The ith person's jth test, cutted from k
+                file_num = 1280
+                data_num_in_each_file = 10
+            self.index=[] 
+            for i in range(file_num):
+                for j in range(data_num_in_each_file):
+                    if self.time is None:
+                        self.index.append((i,j))
+                    else:
+                        for k in range(7680-self.time*128):
+                            self.index.append((i,j,k)) # The ith person's jth test, cutted from k
         random.shuffle(self.index)
 
         if "d_label" in argv:
@@ -180,13 +182,10 @@ class SimpleDeap(torch.utils.data.Dataset):
             random.shuffle(self.index)
             self.should_shuffle=False
 
-        if self.mode == "zzh":
-            person = self.index[i]
+        if self.time is None:
+            person, test = self.index[i]
         else:
-            if self.time is None:
-                person, test = self.index[i]
-            else:
-                person, test, start = self.index[i]
+            person, test, start = self.index[i]
 
         if person in self.memory:
             mat=self.memory[person]
@@ -195,32 +194,30 @@ class SimpleDeap(torch.utils.data.Dataset):
                 first_key=list(self.memory.keys())[0]
                 del self.memory[first_key]
             if self.mode=="BSA" or self.mode=="zzh":
-                mat=np.load("{}/signals/{}_signal_{}.npy".format(self.dir, self.mode, person))
+                mat=np.load("{}/signals/{}_signal_{}.npy".format(self.dir, self.mode, person), allow_pickle=True)
             else:
                 file_index="0{}".format(person+1) if person<9 else str(person+1)
                 mat=scipy.io.loadmat("{}/s{}.mat".format(self.dir, file_index))
             self.memory[person]=mat
 
-        if self.mode=="BSA":
+        if self.mode=="BSA" or self.mode=="zzh":
             x=mat[test]
-        elif self.mode == "zzh":
-            x=mat
         else:
             x=mat['data'][test]
         if self.time is None:
             x = x[:self.channel_amount]
         else:
             x=x[:self.channel_amount, start:start+self.time*128]
-        x=torch.tensor(x, dtype=torch.float32)
+        if isinstance(x, torch.Tensor) is False:
+            x=torch.tensor(x, dtype=torch.float32)
 
         if self.mode=="BSA" or self.mode=="zzh":
-            mat=np.load("{}/labels/{}_labels_{}.npy".format(self.dir, self.mode, person))
-            y=mat
-            if self.mode == "BSA":
-                y=mat[test]
+            mat=np.load("{}/labels/{}_labels_{}.npy".format(self.dir, self.mode, person), allow_pickle=True)
+            y=mat[test]
         else:
             y=mat['labels'][test][:2]
-        y=torch.tensor(y, dtype=torch.float32)
+        if isinstance(y, torch.Tensor) is False:
+            y=torch.tensor(y, dtype=torch.float32)
 
         if self.mode=="spiking":
             x[x>0]=1.
@@ -235,7 +232,7 @@ class SimpleDeap(torch.utils.data.Dataset):
             y[y<5]=0.
             y[y>=5]=1.
 
-        x=x.to(dtype=torch.float32)
+        x=x.to(dtype=torch.float32).view(self.channel_amount, -1)
         y=y.to(dtype=torch.float32)
 
         return x,y

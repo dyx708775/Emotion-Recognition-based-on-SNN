@@ -13,7 +13,7 @@ test_ds=torch.utils.data.DataLoader(valid_data, batch_size=128)
 lsm_model=pkg.StdpModel.EEG_LSM()
 lsm_exe = pkg.StdpModel.STDPExe(lsm_model, "Reg_model",  train_ds, test_ds)
 
-dnn = pkg.Regression.EEG_DNN()
+dnn = pkg.Regression.EEG_Reg()
 dnn_exe = pkg.Regression.RegExe(dnn, lsm_exe, "Reg_model", train_ds, test_ds)
-dnn_exe.train(1, early_stop_accuracy = (0.48, 0.42), test_length = 256)
+dnn_exe.train(1, early_stop_accuracy = (0.48, 0.44), test_length = 256)
 

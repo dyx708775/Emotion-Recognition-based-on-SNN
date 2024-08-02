@@ -35,7 +35,7 @@ class RegressionModel(nn.Module):
 class EEG_Reg(nn.Module):
     def __init__(self):
         super().__init__()
-        self.linear=nn.Linear(32,2)
+        self.linear=nn.Linear(128,2)
         self.sigmoid=nn.Sigmoid()
     def forward(self, state):
         '''
@@ -285,12 +285,12 @@ class RegExe():
                             
                             actual_test_length, test_loss, L1_accuracy = self.test(640)
                             print("AT_L1 : accuracy = {}".format(L1_accuracy))
-                            AT_file.write("AT_L1: test_length={}, loss={}, accuracy={}, pass={}\n".format(actual_test_length, test_loss, L1_accuracy, test_accuracy>=early_stop_threshold_v2))
+                            AT_file.write("AT_L1: test_length={}, loss={}, accuracy={}, pass={}\n".format(actual_test_length, test_loss, L1_accuracy, L1_accuracy>=early_stop_threshold_v2))
                             
                             if L1_accuracy >= early_stop_threshold_v2:
                                 actual_test_length, test_loss, L2_accuracy = self.test(1280)
                                 print("AT_L2 Passed: accuracy = {}".format(L2_accuracy))
-                                AT_file.write("AT_L2: test_length={}, loss={}, accuracy={}, pass={}\n".format(actual_test_length, test_loss, L2_accuracy, test_accuracy>=early_stop_threshold_v2))
+                                AT_file.write("AT_L2: test_length={}, loss={}, accuracy={}, pass={}\n".format(actual_test_length, test_loss, L2_accuracy, L2_accuracy>=early_stop_threshold_v2))
 
                                 if L2_accuracy >= early_stop_threshold_v2:
                                     early_stop = True
