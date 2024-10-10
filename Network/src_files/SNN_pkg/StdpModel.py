@@ -384,6 +384,683 @@ class EEG_SequentialCompressionUnit(nn.Module):
         liquid_state=torch.exp(self.neuron.pre_v)
         return liquid_state
 
+
+class EegExposeAll_32_m(nn.Module):
+    '''
+    For EEG. Expose the votage of all the neurons. Use v as the output rather than pre_v.
+    It is aimed to let the classifier fully connect to this LSM. While the structure is the same as EEG_LSM.
+    in: [n,32]
+    out: tuple, ([n, 64], [n, 128], [n, 128])
+    Only compatible with the fully connected classifier.
+    Written date: 2024.9.22
+    '''
+    def __init__(self):
+        super().__init__()
+        self.b1_linear=layer.Linear(32,64,bias=False)
+        self.b1_neuron=WTA_LIFNode(tau=80000., v_threshold=1.2, decay_input=False)
+        self.b1_cache=0
+        self.b2_linear=layer.Linear(64,128,bias=False)
+        self.b2_neuron=WTA_LIFNode(tau=80000., v_threshold=1.2, decay_input=False)
+        self.b2_cache=0
+        self.b2_recurrent=layer.Linear(128,128,bias=False)
+        self.b3_linear=layer.Linear(128,128,bias=False)
+        self.b3_neuron=WTA_LIFNode(tau=80000., v_threshold=1.2, decay_input=False)
+        self.b3_cache=0
+        self.rates=[]  # Used to record the firing rates of each LIF layer while training.
+        self.synapse_list=[
+            [self.b1_linear, self.b1_neuron],
+            [self.b2_linear, self.b2_neuron],
+            [self.b2_recurrent, self.b2_neuron],
+            [self.b3_linear, self.b3_neuron]
+          ]
+        for param in self.parameters():
+            torch.nn.init.normal_(param.data, mean=0.65, std=0.3)
+            param.data=torch.clamp(param.data, min=0, max=1)
+    def __getitem__(self, index):
+        return self.synapse_list[index]
+    def __len__(self):
+        return len(self.synapse_list)
+    def forward(self, x, record_rate: bool = False, auto_reset: bool = True) -> Tuple:
+        '''
+        x: shape [batch_size, 32, time_step]
+        out: [batch_size, 500]
+        '''
+        batch_size,l,time_step=x.shape
+        self.b1_cache=torch.zeros(batch_size,64)
+        self.b2_cache=torch.zeros(batch_size,128)
+        if torch.cuda.is_available()==True:
+            self.b1_cache=self.b1_cache.cuda()
+            self.b2_cache=self.b2_cache.cuda()
+        if auto_reset==True:
+            functional.reset_net(self)
+        for i in range(time_step):
+            inp=x[:,:,i]  # shape: [batch_size, 32]
+            inp=self.b1_linear(inp)
+            inp=self.b1_neuron(inp)
+            self.b1_cache=inp
+            inp=self.b2_linear(inp)
+            y_cache=self.b2_recurrent(self.b2_cache)
+            inp=self.b2_neuron(inp+y_cache)
+            self.b2_cache=inp
+            inp=self.b3_linear(inp)
+            inp=self.b3_neuron(inp)
+            self.b3_cache=inp
+            if record_rate==True and i==time_step-1:
+                # Then record the firing rates of each neuron layer.
+                rate_list=[]
+                n_1=self.b1_cache[0].detach()
+                n_2=self.b2_cache[0].detach()
+                n_3=self.b3_cache[0].detach()
+                rate_list.append((n_1.sum()/len(n_1)).cpu().item())
+                rate_list.append((n_2.sum()/len(n_2)).cpu().item())
+                rate_list.append((n_3.sum()/len(n_3)).cpu().item())
+                self.rates=rate_list
+        b1_state = torch.exp(self.b1_neuron.v)
+        b2_state = torch.exp(self.b2_neuron.v)
+        b3_state = torch.exp(self.b3_neuron.v)
+        return b1_state, b2_state, b3_state
+# end of EegExposeAll_32_m
+
+
+
+class EegExposeTwo_14_m(nn.Module):
+    '''
+    For EEG. Expose the votage of last 2 layers of the neurons. Use v as the output rather than pre_v.
+    It is aimed to let the classifier fully connect to this LSM. While the structure is the same as EEG_LSM.
+    in: [n,14]
+    out: tuple, ([n, 128], [n, 128])
+    Only compatible with the fully connected classifier.
+    Written date: 2024.10.4
+    '''
+    def __init__(self, use_pre_v = False):
+        super().__init__()
+        self.use_pre_v = use_pre_v
+
+        self.b1_linear=layer.Linear(14,64,bias=False)
+        self.b1_neuron=WTA_LIFNode(tau=80000., v_threshold=1.2, decay_input=False)
+        self.b1_cache=0
+        self.b2_linear=layer.Linear(64,128,bias=False)
+        self.b2_neuron=WTA_LIFNode(tau=80000., v_threshold=1.2, decay_input=False)
+        self.b2_cache=0
+        self.b2_recurrent=layer.Linear(128,128,bias=False)
+        self.b3_linear=layer.Linear(128,128,bias=False)
+        self.b3_neuron=WTA_LIFNode(tau=80000., v_threshold=1.2, decay_input=False)
+        self.b3_cache=0
+        self.rates=[]  # Used to record the firing rates of each LIF layer while training.
+        self.synapse_list=[
+            [self.b1_linear, self.b1_neuron],
+            [self.b2_linear, self.b2_neuron],
+            [self.b2_recurrent, self.b2_neuron],
+            [self.b3_linear, self.b3_neuron]
+          ]
+        for param in self.parameters():
+            torch.nn.init.normal_(param.data, mean=0.65, std=0.3)
+            param.data=torch.clamp(param.data, min=0, max=1)
+    def __getitem__(self, index):
+        return self.synapse_list[index]
+    def __len__(self):
+        return len(self.synapse_list)
+    def forward(self, x, record_rate: bool = False, auto_reset: bool = True) -> Tuple:
+        batch_size,l,time_step=x.shape
+        self.b1_cache=torch.zeros(batch_size,64)
+        self.b2_cache=torch.zeros(batch_size,128)
+        if torch.cuda.is_available()==True:
+            self.b1_cache=self.b1_cache.cuda()
+            self.b2_cache=self.b2_cache.cuda()
+        if auto_reset==True:
+            functional.reset_net(self)
+        for i in range(time_step):
+            inp=x[:,:,i]  # shape: [batch_size, 32]
+            inp=self.b1_linear(inp)
+            inp=self.b1_neuron(inp)
+            self.b1_cache=inp
+            inp=self.b2_linear(inp)
+            y_cache=self.b2_recurrent(self.b2_cache)
+            inp=self.b2_neuron(inp+y_cache)
+            self.b2_cache=inp
+            inp=self.b3_linear(inp)
+            inp=self.b3_neuron(inp)
+            self.b3_cache=inp
+            if record_rate==True and i==time_step-1:
+                # Then record the firing rates of each neuron layer.
+                rate_list=[]
+                n_1=self.b1_cache[0].detach()
+                n_2=self.b2_cache[0].detach()
+                n_3=self.b3_cache[0].detach()
+                rate_list.append((n_1.sum()/len(n_1)).cpu().item())
+                rate_list.append((n_2.sum()/len(n_2)).cpu().item())
+                rate_list.append((n_3.sum()/len(n_3)).cpu().item())
+                self.rates=rate_list
+        if self.use_pre_v:
+            b2_state = torch.exp(self.b2_neuron.pre_v)
+            b3_state = torch.exp(self.b3_neuron.pre_v)
+        else:
+            b2_state = torch.exp(self.b2_neuron.v)
+            b3_state = torch.exp(self.b3_neuron.v)
+        return b2_state, b3_state
+# end of EegExpose_14_m
+
+
+
+class EegCircle_14_m(nn.Module):
+    '''
+    Use a recurrent connection between the 2rd and 3th neuron layer.
+    in: [n,14]
+    out: tuple, ([n, 128], [n, 128])
+    Only compatible with the fully connected classifier.
+    Written date: 2024.10.4
+    '''
+    def __init__(self, use_pre_v = False):
+        super().__init__()
+        self.use_pre_v = use_pre_v
+
+        self.b1_linear=layer.Linear(14,64,bias=False)
+        self.b1_neuron=WTA_LIFNode(tau=800., v_threshold=1.2, decay_input=False)
+        self.b1_cache=0
+        self.b2_linear=layer.Linear(64,128,bias=False)
+        self.b2_neuron=WTA_LIFNode(tau=800., v_threshold=1.2, decay_input=False)
+        self.b2_cache=0
+        self.recurrent=layer.Linear(128,128,bias=False)
+        self.b3_linear=layer.Linear(128,128,bias=False)
+        self.b3_neuron=WTA_LIFNode(tau=800., v_threshold=1.2, decay_input=False)
+        self.b3_cache=0
+        self.rates=[]  # Used to record the firing rates of each LIF layer while training.
+        self.synapse_list=[
+            [self.b1_linear, self.b1_neuron],
+            [self.b2_linear, self.b2_neuron],
+            [self.b3_linear, self.b3_neuron],
+            [self.recurrent, self.b2_neuron]
+          ]
+        for param in self.parameters():
+            torch.nn.init.normal_(param.data, mean=0.65, std=0.3)
+            param.data=torch.clamp(param.data, min=0, max=1)
+    def __getitem__(self, index):
+        return self.synapse_list[index]
+    def __len__(self):
+        return len(self.synapse_list)
+    def forward(self, x, record_rate: bool = False, auto_reset: bool = True) -> Tuple:
+        batch_size,l,time_step=x.shape
+        self.b1_cache=torch.zeros(batch_size,64)
+        self.b2_cache=torch.zeros(batch_size,128)
+        self.b3_cache=torch.zeros(batch_size, 128)
+        if torch.cuda.is_available()==True:
+            self.b1_cache=self.b1_cache.cuda()
+            self.b2_cache=self.b2_cache.cuda()
+            self.b3_cache = self.b3_cache.cuda()
+        if auto_reset==True:
+            functional.reset_net(self)
+        for i in range(time_step):
+            inp=x[:,:,i]  # shape: [batch_size, 14]
+            inp=self.b1_linear(inp)
+            inp=self.b1_neuron(inp)
+            self.b1_cache=inp
+            inp=self.b2_linear(inp)
+            y_cache=self.recurrent(self.b3_cache)
+            inp=self.b2_neuron(inp+y_cache)
+            self.b2_cache=inp
+            inp=self.b3_linear(inp)
+            inp=self.b3_neuron(inp)
+            self.b3_cache=inp
+            if record_rate==True and i==time_step-1:
+                # Then record the firing rates of each neuron layer.
+                rate_list=[]
+                n_1=self.b1_cache[0].detach()
+                n_2=self.b2_cache[0].detach()
+                n_3=self.b3_cache[0].detach()
+                rate_list.append((n_1.sum()/len(n_1)).cpu().item())
+                rate_list.append((n_2.sum()/len(n_2)).cpu().item())
+                rate_list.append((n_3.sum()/len(n_3)).cpu().item())
+                self.rates=rate_list
+        if self.use_pre_v:
+            b2_state = torch.exp(self.b2_neuron.pre_v)
+            b3_state = torch.exp(self.b3_neuron.pre_v)
+        else:
+            b2_state = torch.exp(self.b2_neuron.v)
+            b3_state = torch.exp(self.b3_neuron.v)
+        return b2_state, b3_state
+# end of EegCircle_14_m
+
+
+
+class EegLeaky_14_m256(nn.Module):
+    '''
+    Use a recurrent connection between the 2rd and 3th neuron layer, and with a small tau for last two layer.
+    i.e. with Leaky LIF.
+    Leaky makes robustness.
+    Also with a larger scale.
+    in: [n,14]
+    out: tuple, ([n, 256], [n, 256])
+    Only compatible with the fully connected classifier.
+    Written date: 2024.10.5
+    '''
+    def __init__(self, use_pre_v = False):
+        super().__init__()
+        self.use_pre_v = use_pre_v
+
+        self.b1_linear=layer.Linear(14,64,bias=False)
+        self.b1_neuron=WTA_LIFNode(tau=800., v_threshold=1.2, decay_input=False)
+        self.b1_cache=0
+        self.b2_linear=layer.Linear(64,256,bias=False)
+        self.b2_neuron=WTA_LIFNode(tau=3., v_threshold=1.2, decay_input=False)
+        self.b2_cache=0
+        self.recurrent=layer.Linear(256,256,bias=False)
+        self.b3_linear=layer.Linear(256,256,bias=False)
+        self.b3_neuron=WTA_LIFNode(tau=3., v_threshold=1.2, decay_input=False)
+        self.b3_cache=0
+        self.rates=[]  # Used to record the firing rates of each LIF layer while training.
+        self.synapse_list=[
+            [self.b1_linear, self.b1_neuron],
+            [self.b2_linear, self.b2_neuron],
+            [self.b3_linear, self.b3_neuron],
+            [self.recurrent, self.b2_neuron]
+          ]
+        for param in self.parameters():
+            torch.nn.init.normal_(param.data, mean=0.65, std=0.3)
+            param.data=torch.clamp(param.data, min=0, max=1)
+    def __getitem__(self, index):
+        return self.synapse_list[index]
+    def __len__(self):
+        return len(self.synapse_list)
+    def forward(self, x, record_rate: bool = False, auto_reset: bool = True) -> Tuple:
+        batch_size,l,time_step=x.shape
+        self.b1_cache=torch.zeros(batch_size,64)
+        self.b2_cache=torch.zeros(batch_size,256)
+        self.b3_cache=torch.zeros(batch_size, 256)
+        if torch.cuda.is_available()==True:
+            self.b1_cache=self.b1_cache.cuda()
+            self.b2_cache=self.b2_cache.cuda()
+            self.b3_cache = self.b3_cache.cuda()
+        if auto_reset==True:
+            functional.reset_net(self)
+        for i in range(time_step):
+            inp=x[:,:,i]  # shape: [batch_size, 14]
+            inp=self.b1_linear(inp)
+            inp=self.b1_neuron(inp)
+            self.b1_cache=inp
+            inp=self.b2_linear(inp)
+            y_cache=self.recurrent(self.b3_cache)
+            inp=self.b2_neuron(inp+y_cache)
+            self.b2_cache=inp
+            inp=self.b3_linear(inp)
+            inp=self.b3_neuron(inp)
+            self.b3_cache=inp
+            if record_rate==True and i==time_step-1:
+                # Then record the firing rates of each neuron layer.
+                rate_list=[]
+                n_1=self.b1_cache[0].detach()
+                n_2=self.b2_cache[0].detach()
+                n_3=self.b3_cache[0].detach()
+                rate_list.append((n_1.sum()/len(n_1)).cpu().item())
+                rate_list.append((n_2.sum()/len(n_2)).cpu().item())
+                rate_list.append((n_3.sum()/len(n_3)).cpu().item())
+                self.rates=rate_list
+        if self.use_pre_v:
+            b2_state = torch.exp(self.b2_neuron.pre_v)
+            b3_state = torch.exp(self.b3_neuron.pre_v)
+        else:
+            b2_state = torch.exp(self.b2_neuron.v)
+            b3_state = torch.exp(self.b3_neuron.v)
+        return b2_state, b3_state
+# end of EegLeaky_14_m256
+
+
+
+class EegFunctionColumn_14_5m128(nn.Module):
+    '''
+    This class aims to simulate 
+    in: [n,14]
+    out: tuple, ([n, 128], [n, 128])
+    Only compatible with the fully connected classifier.
+    Written date: 2024.10.5
+    '''
+    def __init__(self):
+        super().__init__()
+
+        self.b1_bridge=layer.Linear(14,64,bias=False)
+        self.b1_inside = layer.Linear(64, 64, bias = False)
+        self.b1_neuron = WTA_LIFNode(tau=3., v_threshold=1.2, decay_input=False)
+        self.b1_cache=0
+
+        self.recurrent_2_1 = layer.Linear(128, 64, bias = False)
+
+        self.b2_bridge = layer.Linear(64,128,bias=False)
+        self.b2_inside = layer.Linear(128, 128, bias=False)
+        self.b2_neuron=WTA_LIFNode(tau=3., v_threshold=1.2, decay_input=False)
+        self.b2_cache=0
+
+        self.recurrent_3_2 = layer.Linear(128,128,bias=False)
+
+        self.b3_bridge = layer.Linear(128,128,bias=False)
+        self.b3_inside = layer.Linear(128, 128, bias = False)
+        self.b3_neuron = WTA_LIFNode(tau=3., v_threshold=1.2, decay_input=False)
+        self.b3_cache=0
+
+        self.recurrent_4_3 = layer.Linear(128,128,bias=False)
+
+        self.b4_bridge = layer.Linear(128,128,bias=False)
+        self.b4_inside = layer.Linear(128, 128, bias = False)
+        self.b4_neuron = WTA_LIFNode(tau=3., v_threshold=1.2, decay_input=False)
+        self.b4_cache=0
+
+        self.recurrent_5_4 = layer.Linear(128,128,bias=False)
+
+        self.b5_bridge = layer.Linear(128,128,bias=False)
+        self.b5_inside = layer.Linear(128, 128, bias = False)
+        self.b5_neuron = WTA_LIFNode(tau=3., v_threshold=1.2, decay_input=False)
+        self.b5_cache=0
+
+        self.recurrent_6_5 = layer.Linear(128,128,bias=False)
+
+        self.b6_bridge = layer.Linear(128,128,bias=False)
+        self.b6_inside = layer.Linear(128, 128, bias = False)
+        self.b6_neuron = WTA_LIFNode(tau=3., v_threshold=1.2, decay_input=False)
+        self.b6_cache=0
+
+        self.rates=[]  # Used to record the firing rates of each LIF layer while training.
+        self.synapse_list=[
+            [self.b1_bridge, self.b1_neuron],
+            [self.b1_inside, self.b1_neuron],
+            [self.b2_bridge, self.b2_neuron],
+            [self.b2_inside, self.b2_neuron],
+            [self.b3_bridge, self.b3_neuron],
+            [self.b3_inside, self.b3_neuron],
+            [self.b4_bridge, self.b4_neuron],
+            [self.b4_inside, self.b4_neuron],
+            [self.b5_bridge, self.b5_neuron],
+            [self.b5_inside, self.b5_neuron],
+            [self.b6_bridge, self.b6_neuron],
+            [self.b6_inside, self.b6_neuron],
+            [self.recurrent_2_1, self.b1_neuron],
+            [self.recurrent_3_2, self.b2_neuron],
+            [self.recurrent_4_3, self.b3_neuron],
+            [self.recurrent_5_4, self.b4_neuron],
+            [self.recurrent_6_5, self.b5_neuron]
+          ]
+        for param in self.parameters():
+            torch.nn.init.normal_(param.data, mean=0.65, std=0.3)
+            param.data=torch.clamp(param.data, min=0, max=1)
+
+    def __getitem__(self, index):
+        return self.synapse_list[index]
+
+    def __len__(self):
+        return len(self.synapse_list)
+
+    def forward(self, x, record_rate: bool = False, auto_reset: bool = True) -> Tuple:
+        batch_size,l,time_step=x.shape
+        self.b1_cache=torch.zeros(batch_size,64)
+        self.b2_cache=torch.zeros(batch_size,128)
+        self.b3_cache=torch.zeros(batch_size, 128)
+        self.b4_cache=torch.zeros(batch_size, 128)
+        self.b5_cache=torch.zeros(batch_size, 128)
+        self.b6_cache=torch.zeros(batch_size, 128)
+        if torch.cuda.is_available()==True:
+            self.b1_cache=self.b1_cache.cuda()
+            self.b2_cache=self.b2_cache.cuda()
+            self.b3_cache = self.b3_cache.cuda()
+            self.b4_cache=self.b4_cache.cuda()
+            self.b5_cache=self.b5_cache.cuda()
+            self.b6_cache = self.b6_cache.cuda()
+        if auto_reset==True:
+            functional.reset_net(self)
+
+        for i in range(time_step):
+            inp=x[:,:,i]  # shape: [batch_size, 14]
+
+            stalk=self.b1_bridge(inp)
+            stalk=self.b1_neuron(stalk)
+            inside = self.b1_inside(stalk)
+            _ = self.b1_neuron(inside)
+
+            stalk = self.b2_bridge(stalk)
+            stalk = self.b2_neuron(stalk)
+            inside = self.b2_inside(stalk)
+            _ = self.b2_neuron(inside)
+
+            stalk = self.b3_bridge(stalk)
+            stalk = self.b3_neuron(stalk)
+            inside = self.b3_inside(stalk)
+            _ = self.b3_neuron(inside)
+
+            stalk=self.b4_bridge(stalk)
+            stalk=self.b4_neuron(stalk)
+            inside = self.b4_inside(stalk)
+            _ = self.b4_neuron(inside)
+
+            stalk = self.b5_bridge(stalk)
+            stalk = self.b5_neuron(stalk)
+            inside = self.b5_inside(stalk)
+            _ = self.b5_neuron(inside)
+
+            stalk = self.b6_bridge(stalk)
+            stalk = self.b6_neuron(stalk)
+            inside = self.b6_inside(stalk)
+            _ = self.b6_neuron(inside)
+
+            self.b6_cache = _
+
+            stalk = self.recurrent_6_5(stalk)
+            stalk = self.b5_neuron(stalk)
+            inside = self.b5_inside(stalk)
+            _ = self.b5_neuron(inside)
+
+            self.b5_cache = _
+
+            stalk = self.recurrent_5_4(stalk)
+            stalk = self.b4_neuron(stalk)
+            inside = self.b4_inside(stalk)
+            _ = self.b4_neuron(inside)
+
+            self.b4_cache = _
+
+            stalk = self.recurrent_4_3(stalk)
+            stalk = self.b3_neuron(stalk)
+            inside = self.b3_inside(stalk)
+            _ = self.b3_neuron(inside)
+
+            self.b3_cache = _
+
+            stalk = self.recurrent_3_2(stalk)
+            stalk = self.b2_neuron(stalk)
+            inside = self.b2_inside(stalk)
+            _ = self.b2_neuron(inside)
+
+            self.b2_cache = _
+
+            stalk = self.recurrent_2_1(stalk)
+            stalk = self.b1_neuron(stalk)
+            inside = self.b1_inside(stalk)
+            _ = self.b1_neuron(inside)
+
+            self.b1_cache = _
+
+            if record_rate==True and i==time_step-1:
+                # Then record the firing rates of each neuron layer.
+                rate_list=[]
+                n_1=self.b1_cache[0].detach()
+                n_2=self.b2_cache[0].detach()
+                n_3=self.b3_cache[0].detach()
+                n_4=self.b4_cache[0].detach()
+                n_5=self.b5_cache[0].detach()
+                n_6=self.b6_cache[0].detach()
+                rate_list.append((n_1.sum()/len(n_1)).cpu().item())
+                rate_list.append((n_2.sum()/len(n_2)).cpu().item())
+                rate_list.append((n_3.sum()/len(n_3)).cpu().item())
+                rate_list.append((n_4.sum()/len(n_4)).cpu().item())
+                rate_list.append((n_5.sum()/len(n_5)).cpu().item())
+                rate_list.append((n_6.sum()/len(n_6)).cpu().item())
+                self.rates=rate_list
+        b2_state = torch.exp(self.b2_neuron.v)
+        b3_state = torch.exp(self.b3_neuron.v)
+        b4_state = torch.exp(self.b4_neuron.v)
+        b5_state = torch.exp(self.b5_neuron.v)
+        b6_state = torch.exp(self.b6_neuron.v)
+        return b2_state, b3_state, b4_state, b5_state, b6_state
+# end of EegFunctionColumn_14_5m128
+
+
+
+class EegFunctionColumnAsyn_14_5m128(nn.Module):
+    '''
+    This class aims to simulate the ASYNCHRONOUS process happening in Function Column. 
+    Use exponential decay of time as output states. See Al Zoubi et al. 2018.
+    in: [n,14]
+    out: tuple, ([n, 128])*5
+    Only compatible with the fully connected classifier.
+    Written date: 2024.10.7
+    '''
+    def __init__(self, **argv):
+        '''
+        In argv:
+            1. decay: default 100
+        '''
+        self.decay = argv["decay"] if "decay" in argv else 100
+
+        super().__init__()
+
+        co_tau = 5.0
+        co_v = 1.2
+
+        self.b1_bridge=layer.Linear(14,64,bias=False)
+        self.b1_inside = layer.Linear(64, 64, bias = False)
+        self.b1_neuron = WTA_LIFNode(tau=co_tau, v_threshold=co_v, decay_input=False)
+
+        self.recurrent_2_1 = layer.Linear(128, 64, bias = False)
+
+        self.b2_bridge = layer.Linear(64,128,bias=False)
+        self.b2_inside = layer.Linear(128, 128, bias=False)
+        self.b2_neuron = WTA_LIFNode(tau=co_tau, v_threshold=co_v, decay_input=False)
+
+        self.recurrent_3_2 = layer.Linear(128,128,bias=False)
+
+        self.b3_bridge = layer.Linear(128,128,bias=False)
+        self.b3_inside = layer.Linear(128, 128, bias = False)
+        self.b3_neuron = WTA_LIFNode(tau=co_tau, v_threshold=co_v, decay_input=False)
+
+        self.recurrent_4_3 = layer.Linear(128,128,bias=False)
+
+        self.b4_bridge = layer.Linear(128,128,bias=False)
+        self.b4_inside = layer.Linear(128, 128, bias = False)
+        self.b4_neuron = WTA_LIFNode(tau=co_tau, v_threshold=co_v, decay_input=False)
+
+        self.recurrent_5_4 = layer.Linear(128,128,bias=False)
+
+        self.b5_bridge = layer.Linear(128,128,bias=False)
+        self.b5_inside = layer.Linear(128, 128, bias = False)
+        self.b5_neuron = WTA_LIFNode(tau=co_tau, v_threshold=co_v, decay_input=False)
+
+        self.recurrent_6_5 = layer.Linear(128,128,bias=False)
+
+        self.b6_bridge = layer.Linear(128,128,bias=False)
+        self.b6_inside = layer.Linear(128, 128, bias = False)
+        self.b6_neuron = WTA_LIFNode(tau=co_tau, v_threshold=co_v, decay_input=False)
+        
+        self.time_counter = [None for _ in range(5)]  # Last Spiking Time. IMPORTANT!
+        self.spike_cache = [None for _ in range(6)]
+
+        self.rates=[]  # Used to record the firing rates of each LIF layer while training.
+        self.synapse_list=[
+            [self.b1_bridge, self.b1_neuron],
+            [self.b1_inside, self.b1_neuron],
+            [self.b2_bridge, self.b2_neuron],
+            [self.b2_inside, self.b2_neuron],
+            [self.b3_bridge, self.b3_neuron],
+            [self.b3_inside, self.b3_neuron],
+            [self.b4_bridge, self.b4_neuron],
+            [self.b4_inside, self.b4_neuron],
+            [self.b5_bridge, self.b5_neuron],
+            [self.b5_inside, self.b5_neuron],
+            [self.b6_bridge, self.b6_neuron],
+            [self.b6_inside, self.b6_neuron],
+            [self.recurrent_2_1, self.b1_neuron],
+            [self.recurrent_3_2, self.b2_neuron],
+            [self.recurrent_4_3, self.b3_neuron],
+            [self.recurrent_5_4, self.b4_neuron],
+            [self.recurrent_6_5, self.b5_neuron]
+          ]
+        for param in self.parameters():
+            torch.nn.init.normal_(param.data, mean=0.65, std=0.3)
+            param.data=torch.clamp(param.data, min=0, max=1)
+
+    def __getitem__(self, index):
+        return self.synapse_list[index]
+
+    def __len__(self):
+        return len(self.synapse_list)
+
+    def forward(self, x, record_rate: bool = False, auto_reset: bool = True) -> Tuple:
+        batch_size,l,time_step=x.shape
+
+        for i in range(5):
+            self.time_counter[i] = torch.zeros(batch_size, 128)
+            if torch.cuda.is_available():
+                self.time_counter[i] = self.time_counter[i].cuda()
+
+        for i in range(6):
+            self.spike_cache[i] = torch.zeros(batch_size, 128 if i!=0 else 64)
+            if torch.cuda.is_available():
+                self.spike_cache[i] = self.spike_cache[i].cuda()
+        
+        if auto_reset==True:
+            functional.reset_net(self)
+
+        for i in range(time_step):  # Function Column For 6 Blocks. Use Output Based on Last 5 Blocks.
+            inp=x[:,:,i]  # shape: [batch_size, 14]
+            out = []
+
+            float_1 = self.b1_bridge(inp)
+            float_2 = self.b1_inside(self.spike_cache[0])
+            float_3 = self.recurrent_2_1(self.spike_cache[1])
+            out.append(self.b1_neuron(float_1+float_2+float_3))
+
+            float_1 = self.b2_bridge(self.spike_cache[0])
+            float_2 = self.b2_inside(self.spike_cache[1])
+            float_3 = self.recurrent_3_2(self.spike_cache[2])
+            out.append(self.b2_neuron(float_1+float_2+float_3))
+
+            float_1 = self.b3_bridge(self.spike_cache[1])
+            float_2 = self.b3_inside(self.spike_cache[2])
+            float_3 = self.recurrent_4_3(self.spike_cache[3])
+            out.append(self.b3_neuron(float_1+float_2+float_3))
+
+            float_1 = self.b4_bridge(self.spike_cache[2])
+            float_2 = self.b4_inside(self.spike_cache[3])
+            float_3 = self.recurrent_5_4(self.spike_cache[4])
+            out.append(self.b4_neuron(float_1+float_2+float_3))
+
+            float_1 = self.b5_bridge(self.spike_cache[3])
+            float_2 = self.b5_inside(self.spike_cache[4])
+            float_3 = self.recurrent_6_5(self.spike_cache[5])
+            out.append(self.b5_neuron(float_1+float_2+float_3))
+
+            float_1 = self.b6_bridge(self.spike_cache[4])
+            float_2 = self.b6_inside(self.spike_cache[5])
+            out.append(self.b6_neuron(float_1+float_2))
+
+            for i,single_out in enumerate(out):
+                self.spike_cache[i] = single_out
+
+            for i in range(5):
+                self.time_counter[i] += 1
+                self.time_counter[i][self.spike_cache[i+1]==1] = 0
+
+            if record_rate==True and i==time_step-1:
+                # Then record the firing rates of each neuron layer.
+                rate_list=[]
+                for cache in self.spike_cache:
+                    n = cache[0].detach()
+                    rate_list.append((n.sum()/len(n)).cpu().item())
+                self.rates=rate_list
+
+        tau = self.decay  # Decay Factor. Control decay speed.
+        states = []
+        for time in self.time_counter:
+            states.append(torch.exp(-time/tau))   # Exponential Decay. See Al Zoubi et al. 2018, Function (7)
+        return tuple(states)
+# end of EegFunctionColumnAsyn_14_5m128 
+
+
+
 def w_dep_factor(a: float, w: torch.Tensor) ->torch.Tensor:
     '''
     Weight Dependence Factor for STDPLearner. More details
@@ -409,11 +1086,15 @@ class STDPExe():
     5. visualize()
     6. with_record(): load Cl list and history rates in 'dir/STDP_process_record.txt'.
     '''
-    def __init__(self, model: nn.Module, store_dir: str, train_data: Iterable[Tuple], test_data: Iterable[Tuple]):
+    def __init__(self, model: nn.Module, store_dir: str, train_data: Iterable[Tuple], test_data: Iterable[Tuple], **argv):
         '''
         store_dir refers to a directory of a folder, where to save training results and the model.
         train_data and test_data: iterable, return an (x, y) tuple. They should be packed as batches.
+        In argv:
+            1. lr: learning rate, default 0.01
         '''
+        self.lr = argv["lr"] if "lr" in argv else 0.01
+
         self.dir=store_dir
         if torch.cuda.is_available()==True:
             print("STDPExe: Use CUDA")
@@ -424,7 +1105,7 @@ class STDPExe():
         self.model=model.to(self.device)
         self.train_data=train_data
         self.test_data=test_data
-        self.optim=torch.optim.SGD(self.model.parameters(), lr=1, momentum=0)
+        self.optim=torch.optim.SGD(self.model.parameters(), lr=0.01, momentum=0)
         self.pre_wdf=lambda w: w_dep_factor(3e-3,w)   # 'wdf' means weight-dependence factor, see Morrison et al. (2018)
         self.post_wdf=lambda w: w_dep_factor(4e-3,w) 
         self.stdp_learners=[
@@ -478,7 +1159,7 @@ class STDPExe():
         location='cpu'
         if torch.cuda.is_available()==True:
             location='cuda'
-        self.model.load_state_dict(torch.load(self.dir+"/STDPModel.pt", map_location=location))
+        self.model.load_state_dict(torch.load(self.dir+"/STDPModel.pt", map_location=location, weights_only=True))
         print("STDPExe: STDP model loaded.")
     def calc_Cl(self):
         Cl_list=[]

@@ -80,7 +80,7 @@ def stochastic_for_stdp(amount :int, shape: tuple) -> List[Tuple]:
 
 
 
-class DeapLoader(torch.utils.data.Dataset):
+class SimpleDeap(torch.utils.data.Dataset):
     '''
     This is a class that packs preprocessed DEAP data.
     Preferred store format for each kind of data:
@@ -104,15 +104,14 @@ class DeapLoader(torch.utils.data.Dataset):
         1. index: list
         2. findex: txt file name
         2. memory_num = 1
-        3. channel
+        3. channel_amount = 32
         4. mode = 'spiking' (or prep, origin, BSA, zzh)
         5. d_label (download label name) = "basic"
         6. time (seconds, then the timestep will be time*128) = None (select all)
         '''
         from_argv = lambda key, default: argv[key] if key in argv else default
         self.argv=argv
-        related_channels = [1, 2, 3, 4, 7, 11, 13, 17, 19, 20, 21, 25, 29, 31]
-        self.channel = from_argv("channel", related_channels)
+        self.channel_amount = from_argv("channel_amount", 32)
         self.time = from_argv("time", None)
         self.dir=deap_dir
         self.should_shuffle=False
@@ -167,10 +166,10 @@ class DeapLoader(torch.utils.data.Dataset):
         '''
         test_len=int(len(self)*test_ratio)
         train_len=len(self)-2*test_len
-        sub_DeapLoader = lambda index_list, d_label_str: DeapLoader(self.dir, **self.argv, index=index_list, d_label=d_label_str)
-        train_data=sub_DeapLoader(self.index[:train_len], "train")
-        valid_data=sub_DeapLoader(self.index[train_len:train_len+test_len], "valid")
-        test_data=sub_DeapLoader(self.index[train_len+test_len:], "test")
+        sub_SimpleDeap = lambda index_list, d_label_str: SimpleDeap(self.dir, **self.argv, index=index_list, d_label=d_label_str)
+        train_data=sub_SimpleDeap(self.index[:train_len], "train")
+        valid_data=sub_SimpleDeap(self.index[train_len:train_len+test_len], "valid")
+        test_data=sub_SimpleDeap(self.index[train_len+test_len:], "test")
         return train_data, valid_data, test_data
 
 
@@ -179,8 +178,6 @@ class DeapLoader(torch.utils.data.Dataset):
 
 
     def __getitem__(self, i):
-        related_channels = torch.tensor([1, 2, 3, 4, 7, 11, 13, 17, 19, 20, 21, 25, 29, 31])
-
         if self.should_shuffle==True:
             random.shuffle(self.index)
             self.should_shuffle=False
@@ -207,11 +204,10 @@ class DeapLoader(torch.utils.data.Dataset):
             x=mat[test]
         else:
             x=mat['data'][test]
-    
-        if len(x) != 14:
-            x = x[self.channel]
-        if self.time is not None:
-            x=x[:, start:start+self.time*128]
+        if self.time is None:
+            x = x[:self.channel_amount]
+        else:
+            x=x[:self.channel_amount, start:start+self.time*128]
         if isinstance(x, torch.Tensor) is False:
             x=torch.tensor(x, dtype=torch.float32)
 
@@ -232,79 +228,27 @@ class DeapLoader(torch.utils.data.Dataset):
         else:
             x=x/x.max()
 
-        y[y<5]=0.
-        y[y>=5]=1.
+        if self.mode!="BSA" and self.mode!="zzh":
+            y[y<5]=0.
+            y[y>=5]=1.
 
-        x=x.to(dtype=torch.float32).squeeze()
+        x=x.to(dtype=torch.float32).view(self.channel_amount, -1)
         y=y.to(dtype=torch.float32)
 
         return x,y
 
 
 
-def balance_data(data: torch.Tensor, labels: torch.Tensor, shuffle = False, **argv) -> torch.Tensor:
-    '''
-    This function is used to balance the amount of data for each class.
-    Parameters:
-        data, labels: a batch of data and labels. dim=2.
-        shuffle: wheter shuffle the balanced data and labels or not. It's not necessary for training.
-    Params in argv:
-        stochastic: Bool. Whether randomly set a bias to a single class. Default True.
-    '''
-    stochastic = argv["stochastic"] if "stochastic" in argv else True
-
-    target_list = [[0,0], [1,0], [0,1], [1,1]]
-    split_list = []
-    minlen = 99999
-    for target_origin in target_list:
-        target = torch.tensor(target_origin, dtype = torch.float32)
-        if torch.cuda.is_available():
-            target = target.cuda()
-        fit_list = (labels==target).all(dim=1)
-
-        data_fit = data[fit_list]
-        labels_fit = labels[fit_list]
-        if minlen > len(labels_fit):
-            minlen = len(labels_fit)
-
-        split_list.append((data_fit, labels_fit))
-
-    data_list = []
-    labels_list = []
-    bias_idx = random.randint(0,3)
-    enhanced_factor = 1.1
-    for i, (data_fit, labels_fit) in enumerate(split_list):
-        factor = 1
-        if stochastic and i==bias_idx and minlen*enhanced_factor<=len(data_fit):
-            factor = enhanced_factor
-        data_fit = data_fit[:int(minlen*factor)]
-        labels_fit = labels_fit[:int(minlen*factor)]
-        data_list.append(data_fit)
-        labels_list.append(labels_fit)
-
-    balanced_data = torch.cat(tuple(data_list), dim=0)
-    balanced_labels = torch.cat(tuple(labels_list), dim=0)
-
-    if shuffle:
-        indices = torch.randperm(minlen)
-        balanced_data = balanced_data[indices]
-        balanced_labels = balanced_labels[indices]
-    
-    return balanced_data, balanced_labels
-
-
-
-def test_distribution(exe_model, test_dataloader: torch.utils.data.DataLoader, balance = True) -> matplotlib.figure:
+def test_distribution(exe_model, test_dataloader: torch.utils.data.DataLoader, batch_num = 1) -> matplotlib.figure:
     exe_model.load()
     pred = 0
     ans = 0
     for i,(data,labels) in enumerate(test_dataloader):
         data = data.cuda() if torch.cuda.is_available() else data
-        ans = labels.cuda() if torch.cuda.is_available() else labels
-        if balance:
-            data,ans = balance_data(data, ans, stochastic = False)
         pred = exe_model(data)
-        break
+        ans = labels.cuda() if torch.cuda.is_available() else labels
+        if i+1 == batch_num:
+            break
     correct = pred[(pred==ans).all(dim=1)].cpu()
     print(correct)
     class_list = [(0,0), (0,1), (1,0), (1,1)]
@@ -326,3 +270,45 @@ def test_distribution(exe_model, test_dataloader: torch.utils.data.DataLoader, b
     plt.tight_layout()
     return fig
 
+
+
+def balance_data(data: torch.Tensor, labels: torch.Tensor, shuffle = False) -> torch.Tensor:
+    '''
+    This function is used to balance the amount of data for each class.
+    Parameters:
+        data, labels: a batch of data and labels. dim=2.
+        shuffle: wheter shuffle the balanced data and labels or not. It's not necessary for training.
+    '''
+    target_list = [[0,0], [1,0], [0,1], [1,1]]
+    split_list = []
+    minlen = 99999
+    for target_origin in target_list:
+        target = torch.tensor(target_origin, dtype = torch.float32)
+        if torch.cuda.is_available():
+            target = target.cuda()
+        fit_list = (labels==target).all(dim=1)
+
+        data_fit = data[fit_list]
+        labels_fit = labels[fit_list]
+        if minlen > len(labels_fit):
+            minlen = len(labels_fit)
+
+        split_list.append((data_fit, labels_fit))
+
+    data_list = []
+    labels_list = []
+    for data_fit, labels_fit in split_list:
+        data_fit = data_fit[:minlen]
+        labels_fit = labels_fit[:minlen]
+        data_list.append(data_fit)
+        labels_list.append(labels_fit)
+
+    balanced_data = torch.cat(tuple(data_list), dim=0)
+    balanced_labels = torch.cat(tuple(labels_list), dim=0)
+
+    if shuffle:
+        indices = torch.randperm(minlen)
+        balanced_data = balanced_data[indices]
+        balanced_labels = balanced_labels[indices]
+    
+    return balanced_data, balanced_labels

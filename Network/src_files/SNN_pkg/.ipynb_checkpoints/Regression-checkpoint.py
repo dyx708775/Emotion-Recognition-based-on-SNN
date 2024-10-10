@@ -138,7 +138,7 @@ class EegMultiReg_m_2(nn.Module):
 
 class EegSmallDeep_m_2(nn.Module):
     '''
-    in: tuple, ([n, 128], [n, 128])
+    in: tuple, ([n, 64], [n, 128], [n, 128])
     out: [n, 2]
     This is the classifier fully connected with the multi-layer LSM.
     This network have multiple layers, but small for each layer.
@@ -148,28 +148,27 @@ class EegSmallDeep_m_2(nn.Module):
     def __init__(self):
         super().__init__()
         connect_num = 256
-        dropout_ratio = 0.3
-
         get_parallel = lambda inp: torch.nn.Sequential(
             torch.nn.Linear(inp, connect_num),
             torch.nn.ReLU(),
-            torch.nn.Dropout(dropout_ratio)
+            torch.nn.Dropout()
             )
+        self.pb1 = get_parallel(64)
         self.pb2 = get_parallel(128)
         self.pb3 = get_parallel(128)
-        self.parallel_blocks = [self.pb2, self.pb3]
+        self.parallel_blocks = [self.pb1, self.pb2, self.pb3]
         self.hidden_block = torch.nn.Sequential(
-            torch.nn.Linear(2*connect_num, 2*connect_num),
+            torch.nn.Linear(3*connect_num, 3*connect_num),
             torch.nn.ReLU(),
-            torch.nn.Dropout(dropout_ratio),
-            torch.nn.Linear(2*connect_num, 2*connect_num),
+            torch.nn.Dropout(0.5),
+            torch.nn.Linear(3*connect_num, 3*connect_num),
             torch.nn.ReLU(),
-            torch.nn.Dropout(dropout_ratio),
-            torch.nn.Linear(2*connect_num, 2*connect_num),
+            torch.nn.Dropout(0.5),
+            torch.nn.Linear(3*connect_num, 3*connect_num),
             torch.nn.ReLU(),
-            torch.nn.Dropout(dropout_ratio))
+            torch.nn.Dropout(0.5))
         self.output_block = torch.nn.Sequential(
-            torch.nn.Linear(2*connect_num, 2),
+            torch.nn.Linear(3*connect_num, 2),
             torch.nn.Sigmoid()
             )
 
@@ -185,171 +184,6 @@ class EegSmallDeep_m_2(nn.Module):
         state = self.output_block(state)
         return state
 # end of EegSmallDeep_m_2
-
-class ResBlock(nn.Module):
-    '''
-    Sub-structure for ResNet. Should not be used separately.
-    '''
-    def __init__(self, dim: int, expand = 4):
-        super().__init__()
-        self.linear_1 = torch.nn.Linear(dim, expand*dim)
-        self.batchnorm_1 = torch.nn.BatchNorm1d(expand*dim)
-        self.relu_1 = torch.nn.ReLU()
-        self.linear_2 = torch.nn.Linear(expand*dim, dim)
-        self.batchnorm_2 = torch.nn.BatchNorm1d(dim)
-        self.relu_2 = torch.nn.ReLU()
-    def forward(self, x):
-        y = self.linear_1(x)
-        y = self.batchnorm_1(y)
-        y = self.relu_1(y)
-        y = self.linear_2(y)
-        y = self.batchnorm_2(y)
-        y = y + x
-        y = self.relu_2(y)
-        return y
-
-
-
-class EegRes_m_2(nn.Module):
-    '''
-    in: tuple, ([n, 128], [n, 128])
-    out: [n, 2]
-    A very deep network with multiple Res Block.
-    Written date: 2024.10.4
-    '''
-    
-    def __init__(self):
-        super().__init__()
-        connect_num = 128
-        dropout_ratio = 0.3
-        res_block_num = 20
-
-        get_parallel = lambda inp: torch.nn.Sequential(
-            torch.nn.Linear(inp, connect_num),
-            torch.nn.ReLU(),
-            )
-        self.pb2 = get_parallel(128)
-        self.pb3 = get_parallel(128)
-        self.parallel_blocks = [self.pb2, self.pb3]
-
-        get_res_block = lambda : torch.nn.Sequential(
-            ResBlock(2*connect_num),
-            torch.nn.Dropout(dropout_ratio))
-
-        self.hidden_block = torch.nn.Sequential(
-            *(
-                get_res_block() for _ in range(res_block_num)
-                )
-            )
-
-        self.output_block = torch.nn.Sequential(
-            torch.nn.Linear(2*connect_num, 2),
-            torch.nn.Sigmoid()
-            )
-
-    def forward(self, state_tuple):
-        state_list = list(state_tuple)
-        parallel_zip = zip(self.parallel_blocks, state_list)
-        parallel_output_list = []
-        for block,state in parallel_zip:
-            state=(2*state-(math.exp(1.2)+1))/(math.exp(1.2)-1)
-            parallel_output_list.append(block(state))
-        state = torch.cat(tuple(parallel_output_list), dim=1)
-        state = self.hidden_block(state)
-        state = self.output_block(state)
-        return state
-# end of EegRes_m_2
-
-
-
-class EegRes_m256_2(nn.Module):
-    '''
-    in: tuple, ([n, 256], [n, 256])
-    out: [n, 2]
-    A very deep network with multiple Res Block.
-    Written date: 2024.10.5
-    '''
-    
-    def __init__(self):
-        super().__init__()
-        connect_num = 256
-        dropout_ratio = 0.3
-        res_block_num = 5
-
-        get_parallel = lambda inp: torch.nn.Sequential(
-            torch.nn.Linear(inp, connect_num),
-            torch.nn.ReLU(),
-            )
-        self.parallel_2 = get_parallel(connect_num)
-        self.parallel_3 = get_parallel(connect_num)
-        self.parallel_blocks = [self.parallel_2, self.parallel_3]
-
-        get_res_block = lambda : torch.nn.Sequential(
-            ResBlock(2*connect_num),
-            torch.nn.Dropout(dropout_ratio))
-
-        self.hidden_block = torch.nn.Sequential(
-            *(
-                get_res_block() for _ in range(res_block_num)
-                )
-            )
-
-        self.output_block = torch.nn.Sequential(
-            torch.nn.Linear(2*connect_num, 2),
-            torch.nn.Sigmoid()
-            )
-
-    def forward(self, state_tuple):
-        state_list = list(state_tuple)
-        parallel_zip = zip(self.parallel_blocks, state_list)
-        parallel_output_list = []
-        for block,state in parallel_zip:
-            state=(2*state-(math.exp(1.2)+1))/(math.exp(1.2)-1)
-            parallel_output_list.append(block(state))
-        state = torch.cat(tuple(parallel_output_list), dim=1)
-        state = self.hidden_block(state)
-        state = self.output_block(state)
-        return state
-# end of EegRes_m256_2
-
-
-
-class EegResConcat_5m128_2(nn.Module):
-    '''
-    in: tuple, ([n, 128], [n, 128], [n,128], [n,128], [n,128])
-    out: [n, 2]
-    Concatinate inputs.
-    A very deep network with multiple Res Block.
-    Written date: 2024.10.5
-    '''
-    
-    def __init__(self):
-        super().__init__()
-        connect_num = 128*5
-        dropout_ratio = 0.3
-        res_block_num = 5
-
-        get_res_block = lambda : torch.nn.Sequential(
-            ResBlock(connect_num, 1),
-            torch.nn.Dropout(dropout_ratio))
-
-        self.hidden_block = torch.nn.Sequential(
-            *(
-                get_res_block() for _ in range(res_block_num)
-                )
-            )
-
-        self.output_block = torch.nn.Sequential(
-            torch.nn.Linear(connect_num, 2),
-            torch.nn.Sigmoid()
-            )
-
-    def forward(self, state_tuple):
-        state = torch.cat(state_tuple, dim=1)
-        state = self.hidden_block(state)
-        state = self.output_block(state)
-        return state
-# end of EegResConcat_5m128_2
 
 
 
